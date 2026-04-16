@@ -26,7 +26,7 @@ The pipeline is centered on a local database:
 
 ## Exact-match sources
 
-The live exact-match chain is:
+The live main CLI chain is:
 
 - arXiv comment
 - arXiv abstract HTML
@@ -34,6 +34,9 @@ The live exact-match chain is:
 - Hugging Face paper HTML by arXiv id
 - AlphaXiv paper API by arXiv id
 - AlphaXiv paper HTML by arXiv id
+
+`uv run main.py sync links` intentionally follows only this paper-scoped exact-match chain.
+It does not use title-search fallback against Hugging Face or GitHub.
 
 ## Non-goals
 
@@ -47,6 +50,7 @@ It does **not** try to be:
 - a best-effort heuristic linker that guesses when evidence is weak
 
 If an exact source does not provide a trustworthy repo signal, the project prefers `not_found` or `ambiguous` over a risky match.
+Older scripts under `scripts/` may capture historical experiments, but the supported `main.py` workflow remains exact-match only.
 
 ## Install
 
@@ -115,6 +119,9 @@ The export command writes to a timestamped file such as:
 output/papers-20260416-071922-151537.csv
 ```
 
+`--output` supplies the base path/name; the actual file written is a timestamped sibling file.
+The CSV includes every paper in the selected category/time window, including papers with no resolved GitHub link.
+
 ## Example real run
 
 A full real run on `2026-01` for the default `cs.CV` category produced:
@@ -167,6 +174,10 @@ The CSV export currently includes:
 - `created_at`
 - `description`
 
+Exports include every paper in the selected category/time window.
+For papers without a final resolved repository, `github_primary=""`, `github_all=""`, and `link_status="not_found"`.
+For resolved rows, `github_primary` is the primary final repository URL, `github_all` is a semicolon-separated list of final repository URLs, and `link_status` is `found` or `ambiguous`.
+
 ## Command overview
 
 ```bash
@@ -182,6 +193,19 @@ To inspect all CLI options:
 ```bash
 uv run main.py --help
 ```
+
+## Testing
+
+```bash
+uv sync --dev
+uv run pytest
+```
+
+## Historical scripts
+
+The supported workflow is the `main.py` CLI shown above.
+Older one-off scripts under `scripts/` may reflect historical experiments.
+For example, `scripts/run_december_2025_pipeline.py` includes title-search fallbacks and is not representative of the current exact-match-only CLI.
 
 ## Design principles
 

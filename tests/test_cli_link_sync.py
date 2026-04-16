@@ -1162,11 +1162,12 @@ def test_run_audit_parity_filters_papers_by_published_window(tmp_path, capsys):
         db.close()
 
 
-def test_run_export_csv_writes_published_at_and_filters_by_window(tmp_path, capsys):
+def test_run_export_csv_writes_published_at_and_includes_unresolved_rows(tmp_path, capsys):
     db = Database(tmp_path / "ghstars.db")
     output_path = tmp_path / "papers.csv"
     try:
         _insert_paper(db, "2603.12345", title="March Paper", published_at="2026-03-15")
+        _insert_paper(db, "2603.23456", title="March Unresolved", published_at="2026-03-20")
         _insert_paper(db, "2602.23456", title="February Paper", published_at="2026-02-28")
         _seed_final_link(db, arxiv_id="2603.12345", repo_url="https://github.com/foo/march")
         _seed_final_link(db, arxiv_id="2602.23456", repo_url="https://github.com/foo/feb")
@@ -1211,6 +1212,21 @@ def test_run_export_csv_writes_published_at_and_filters_by_window(tmp_path, caps
         assert "published_at" in reader.fieldnames
         assert rows == [
             {
+                "arxiv_id": "2603.23456",
+                "abs_url": "https://arxiv.org/abs/2603.23456",
+                "title": "March Unresolved",
+                "abstract": "Abstract",
+                "published_at": "2026-03-20",
+                "categories": "cs.CV",
+                "primary_category": "cs.CV",
+                "github_primary": "",
+                "github_all": "",
+                "link_status": "not_found",
+                "stars": "",
+                "created_at": "",
+                "description": "",
+            },
+            {
                 "arxiv_id": "2603.12345",
                 "abs_url": "https://arxiv.org/abs/2603.12345",
                 "title": "March Paper",
@@ -1224,7 +1240,7 @@ def test_run_export_csv_writes_published_at_and_filters_by_window(tmp_path, caps
                 "stars": "42",
                 "created_at": "2024-01-01T00:00:00Z",
                 "description": "March repo",
-            }
+            },
         ]
     finally:
         db.close()

@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+"""Historical December 2025 reproduction script.
+
+This script is not the canonical `main.py` workflow. It preserves an older
+experimental path that can fall back to title-search surfaces, including
+Hugging Face and GitHub title search, while the supported CLI remains
+exact-match only.
+"""
+
 import asyncio
 import json
 import sys
