@@ -1,0 +1,26 @@
+[project]
+name = "scripts.ghstars-ng"
+version = "0.1.0"
+description = "Local-first arXiv to GitHub association toolkit"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp>=3.13.3",
+    "python-dotenv>=1.1.1",
+]
+
+[dependency-groups]
+dev = [
+    "anyio>=4.12.0",
+    "pytest>=8.4.1",
+]
+
+[tool.uv]
+package = false
+
+[[tool.uv.index]]
+url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
+default = true
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
