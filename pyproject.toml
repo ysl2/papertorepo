@@ -1,7 +1,7 @@
 [project]
 name = "scripts.ghstars-ng"
 version = "0.1.0"
-description = "Local-first arXiv to GitHub association toolkit"
+description = "Deterministic local-first arXiv to GitHub association toolkit"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
