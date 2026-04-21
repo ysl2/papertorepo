@@ -431,6 +431,8 @@ export default function AgGridSheet<TData extends RowRecord>({
     const api = apiRef.current
     if (!api) return
     clearGridState(persistenceId)
+    api.hidePopupMenu()
+    api.doFilterAction({ action: 'reset' })
     api.setFilterModel(null)
     api.resetColumnState()
     api.setGridOption('quickFilterText', quickSearch.trim())

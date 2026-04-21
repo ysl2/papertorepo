@@ -14,6 +14,10 @@ function readHeaderState(params: IHeaderParams): HeaderState {
   }
 }
 
+function readFilterPopupOpenState(params: IHeaderParams) {
+  return params.column.isMenuVisible()
+}
+
 function SortIcon({ sort }: { sort: SortDirection | undefined }) {
   if (sort === 'asc') {
     return (
@@ -52,6 +56,8 @@ function FilterIcon() {
 export default function SheetHeader(params: IHeaderParams) {
   const filterButtonRef = useRef<HTMLButtonElement | null>(null)
   const [state, setState] = useState<HeaderState>(() => readHeaderState(params))
+  const [isFilterPopupOpen, setIsFilterPopupOpen] = useState(() => readFilterPopupOpenState(params))
+  const wasOpenOnPressRef = useRef(false)
   const sortTooltip =
     state.sort === 'asc'
       ? `${params.displayName} sorted ascending`
@@ -62,16 +68,20 @@ export default function SheetHeader(params: IHeaderParams) {
 
   useEffect(() => {
     const sync = () => setState(readHeaderState(params))
+    const syncMenuVisible = () => setIsFilterPopupOpen(readFilterPopupOpenState(params))
     sync()
+    syncMenuVisible()
 
     params.column.addEventListener('sortChanged', sync)
     params.column.addEventListener('filterActiveChanged', sync)
     params.column.addEventListener('colDefChanged', sync)
+    params.column.addEventListener('menuVisibleChanged', syncMenuVisible)
 
     return () => {
       params.column.removeEventListener('sortChanged', sync)
       params.column.removeEventListener('filterActiveChanged', sync)
       params.column.removeEventListener('colDefChanged', sync)
+      params.column.removeEventListener('menuVisibleChanged', syncMenuVisible)
     }
   }, [params])
 
@@ -108,9 +118,25 @@ export default function SheetHeader(params: IHeaderParams) {
               type="button"
               className={state.filterActive ? 'sheet-header-button active' : 'sheet-header-button'}
               aria-label={filterTooltip}
+              aria-expanded={isFilterPopupOpen}
+              onMouseDownCapture={() => {
+                wasOpenOnPressRef.current = params.column.isMenuVisible()
+              }}
+              onTouchStartCapture={() => {
+                wasOpenOnPressRef.current = params.column.isMenuVisible()
+              }}
               onClick={(event) => {
                 event.preventDefault()
                 event.stopPropagation()
+                const wasOpenOnPress = wasOpenOnPressRef.current
+                wasOpenOnPressRef.current = false
+
+                params.api.hidePopupMenu()
+
+                if (wasOpenOnPress) {
+                  return
+                }
+
                 if (filterButtonRef.current) {
                   params.showFilter(filterButtonRef.current)
                 }
