@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { IHeaderParams, SortDirection } from 'ag-grid-community'
+import HoverTooltip from './HoverTooltip'
 
 type HeaderState = {
   filterActive: boolean
@@ -51,6 +52,13 @@ function FilterIcon() {
 export default function SheetHeader(params: IHeaderParams) {
   const filterButtonRef = useRef<HTMLButtonElement | null>(null)
   const [state, setState] = useState<HeaderState>(() => readHeaderState(params))
+  const sortTooltip =
+    state.sort === 'asc'
+      ? `${params.displayName} sorted ascending`
+      : state.sort === 'desc'
+        ? `${params.displayName} sorted descending`
+        : `Sort ${params.displayName}`
+  const filterTooltip = state.filterActive ? `${params.displayName} filter active` : `Filter ${params.displayName}`
 
   useEffect(() => {
     const sync = () => setState(readHeaderState(params))
@@ -69,60 +77,50 @@ export default function SheetHeader(params: IHeaderParams) {
 
   return (
     <div className="sheet-header">
-      <span className="sheet-header-title" title={params.displayName}>
-        {params.displayName}
-      </span>
+      <HoverTooltip content={params.displayName} anchorClassName="sheet-header-title-tooltip">
+        <span className="sheet-header-title">{params.displayName}</span>
+      </HoverTooltip>
 
       <div className="sheet-header-actions">
         {params.enableSorting ? (
-          <button
-            type="button"
-            className={state.sort ? 'sheet-header-button active' : 'sheet-header-button'}
-            aria-label={
-              state.sort === 'asc'
-                ? `${params.displayName} sorted ascending`
-                : state.sort === 'desc'
-                  ? `${params.displayName} sorted descending`
-                  : `Sort ${params.displayName}`
-            }
-            title={
-              state.sort === 'asc'
-                ? `${params.displayName} sorted ascending`
-                : state.sort === 'desc'
-                  ? `${params.displayName} sorted descending`
-                  : `Sort ${params.displayName}`
-            }
-            onClick={(event) => {
-              event.preventDefault()
-              event.stopPropagation()
-              params.progressSort(false)
-            }}
-          >
-            <span className="sheet-header-button-icon">
-              <SortIcon sort={state.sort} />
-            </span>
-          </button>
+          <HoverTooltip content={sortTooltip}>
+            <button
+              type="button"
+              className={state.sort ? 'sheet-header-button active' : 'sheet-header-button'}
+              aria-label={sortTooltip}
+              onClick={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                params.progressSort(false)
+              }}
+            >
+              <span className="sheet-header-button-icon">
+                <SortIcon sort={state.sort} />
+              </span>
+            </button>
+          </HoverTooltip>
         ) : null}
 
         {params.column.isFilterAllowed() ? (
-          <button
-            ref={filterButtonRef}
-            type="button"
-            className={state.filterActive ? 'sheet-header-button active' : 'sheet-header-button'}
-            aria-label={state.filterActive ? `${params.displayName} filter active` : `Filter ${params.displayName}`}
-            title={state.filterActive ? `${params.displayName} filter active` : `Filter ${params.displayName}`}
-            onClick={(event) => {
-              event.preventDefault()
-              event.stopPropagation()
-              if (filterButtonRef.current) {
-                params.showFilter(filterButtonRef.current)
-              }
-            }}
-          >
-            <span className="sheet-header-button-icon">
-              <FilterIcon />
-            </span>
-          </button>
+          <HoverTooltip content={filterTooltip}>
+            <button
+              ref={filterButtonRef}
+              type="button"
+              className={state.filterActive ? 'sheet-header-button active' : 'sheet-header-button'}
+              aria-label={filterTooltip}
+              onClick={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                if (filterButtonRef.current) {
+                  params.showFilter(filterButtonRef.current)
+                }
+              }}
+            >
+              <span className="sheet-header-button-icon">
+                <FilterIcon />
+              </span>
+            </button>
+          </HoverTooltip>
         ) : null}
       </div>
     </div>

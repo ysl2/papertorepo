@@ -18,6 +18,7 @@ import {
   compactValueColumnFilter,
   createCompactSetFilterParams,
 } from './components/CompactColumnFilter'
+import HoverTooltip from './components/HoverTooltip'
 import usePointerDownOutside from './hooks/usePointerDownOutside'
 import './App.css'
 
@@ -134,10 +135,18 @@ type ScopeState = {
   categories: string
   timeMode: TimeMode
   day: string
-  monthYear: string
-  monthNumber: string
+  month: string
   from: string
   to: string
+}
+
+type PersistedScopeState = {
+  categories: string
+  timeMode: TimeMode
+  day: string | null
+  month: string | null
+  from: string | null
+  to: string | null
 }
 
 type ResolvedScope = {
@@ -196,12 +205,15 @@ const IDLE_DASHBOARD_POLL_MS = 8000
 const ACTIVE_JOBS_POLL_MS = 2000
 const PASSIVE_JOBS_POLL_MS = 5000
 const LEGACY_SCOPE_STORAGE_KEY = 'ghstars:scope:v3'
-const SCOPE_STORAGE_KEY = 'ghstars:scope:v4'
+const OLDER_SCOPE_STORAGE_KEY = 'ghstars:scope:v4'
+const PREVIOUS_SCOPE_STORAGE_KEY = 'ghstars:scope:v5'
+const SCOPE_STORAGE_KEY = 'ghstars:scope:v6'
 const MONTH_START_YEAR = 1991
 const MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/
 const DATE_PATTERN = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/
 const ARXIV_CATEGORY_PATTERN = /^[a-z]+(?:-[a-z]+)*(?:\.[A-Za-z-]+)?$/
 const CATEGORIES_HINT = 'cs.CV, cs.LG'
+const RANGE_ORDER_HINT = 'From ≤ To'
 
 function toDateInputValue(value: Date) {
   const year = value.getFullYear()
@@ -220,59 +232,8 @@ function addDays(value: Date, delta: number) {
   return next
 }
 
-function digitsOnly(value: string | null | undefined) {
-  return typeof value === 'string' ? value.replace(/\D/g, '') : ''
-}
-
 function hasTypedValue(value: string | null | undefined) {
   return typeof value === 'string' && value.trim().length > 0
-}
-
-function formatDateDraft(value: string | null | undefined) {
-  const digits = digitsOnly(value).slice(0, 8)
-  if (digits.length <= 4) return digits
-  if (digits.length <= 6) return `${digits.slice(0, 4)}-${digits.slice(4)}`
-  return `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6)}`
-}
-
-function formatMonthDraft(value: string | null | undefined) {
-  const digits = digitsOnly(value).slice(0, 6)
-  if (digits.length <= 4) return digits
-  return `${digits.slice(0, 4)}-${digits.slice(4)}`
-}
-
-function formatMonthYearDraft(value: string | null | undefined) {
-  return digitsOnly(value).slice(0, 4)
-}
-
-function formatMonthNumberDraft(value: string | null | undefined) {
-  return digitsOnly(value).slice(0, 2)
-}
-
-function splitMonthValue(value: string | null | undefined) {
-  if (typeof value !== 'string') {
-    return {
-      monthYear: '',
-      monthNumber: '',
-    }
-  }
-  const normalized = value.trim()
-  if (!normalized) {
-    return {
-      monthYear: '',
-      monthNumber: '',
-    }
-  }
-  const [monthYear = '', monthNumber = ''] = normalized.split('-', 2)
-  return {
-    monthYear: formatMonthYearDraft(monthYear),
-    monthNumber: formatMonthNumberDraft(monthNumber),
-  }
-}
-
-function joinMonthValue(monthYear: string, monthNumber: string) {
-  if (!monthYear && !monthNumber) return ''
-  return `${monthYear}-${monthNumber}`
 }
 
 function categoriesValidationMessage(value: string | null | undefined) {
@@ -300,37 +261,106 @@ function isRealDateString(value: string) {
 }
 
 function dateValidationMessage(value: string | null | undefined) {
-  const normalized = formatDateDraft(value)
-  if (!normalized || !isRealDateString(normalized)) return 'Enter date as YYYY-MM-DD.'
+  if (typeof value !== 'string' || !isRealDateString(value)) return 'Enter date as YYYY-MM-DD.'
   return null
 }
 
-function monthValidationMessage(monthYear: string | null | undefined, monthNumber: string | null | undefined) {
-  const normalizedYear = formatMonthYearDraft(monthYear)
-  const normalizedMonthNumber = formatMonthNumberDraft(monthNumber)
-  const normalized = joinMonthValue(normalizedYear, normalizedMonthNumber)
-  if (!MONTH_PATTERN.test(normalized)) return 'Enter month as YYYY-MM.'
-  const year = Number(normalized.slice(0, 4))
+function monthValidationMessage(value: string | null | undefined) {
+  if (typeof value !== 'string' || !MONTH_PATTERN.test(value)) return 'Enter month as YYYY-MM.'
+  const year = Number(value.slice(0, 4))
   const currentYear = new Date().getFullYear()
   if (year < MONTH_START_YEAR || year > currentYear + 1) return 'Enter month as YYYY-MM.'
   return null
 }
 
-function normalizeDateDraft(value: string | null | undefined, fallback: string) {
-  const normalized = formatDateDraft(value)
-  return normalized ? normalized : fallback
+function normalizeTimeMode(value: unknown): TimeMode {
+  return value === 'month' || value === 'range' ? value : 'day'
+}
+
+function joinLegacyMonthValue(monthYear: unknown, monthNumber: unknown) {
+  const year = typeof monthYear === 'string' ? monthYear.trim() : ''
+  const month = typeof monthNumber === 'string' ? monthNumber.trim() : ''
+  if (!year && !month) return ''
+  return `${year}-${month}`
+}
+
+function restoreValidDate(value: unknown, fallback: string) {
+  return typeof value === 'string' && dateValidationMessage(value) === null ? value : fallback
+}
+
+function restoreValidMonth(value: unknown, fallback: string) {
+  return typeof value === 'string' && monthValidationMessage(value) === null ? value : fallback
+}
+
+function restoreValidRange(values: Pick<PersistedScopeState, 'from' | 'to'>, fallback: Pick<ScopeState, 'from' | 'to'>) {
+  if (
+    typeof values.from === 'string' &&
+    typeof values.to === 'string' &&
+    dateValidationMessage(values.from) === null &&
+    dateValidationMessage(values.to) === null &&
+    values.from <= values.to
+  ) {
+    return {
+      from: values.from,
+      to: values.to,
+    }
+  }
+
+  return {
+    from: fallback.from,
+    to: fallback.to,
+  }
+}
+
+function restoreValidCategories(value: unknown, fallback: string) {
+  return typeof value === 'string' && categoriesValidationMessage(value) === null ? value.trim() : fallback
+}
+
+function createPersistedScopeSnapshot(scope: ScopeState): PersistedScopeState {
+  return {
+    categories: scope.categories,
+    timeMode: scope.timeMode,
+    day: scope.day,
+    month: scope.month,
+    from: scope.from,
+    to: scope.to,
+  }
+}
+
+function createPersistableScope(scope: ScopeState, previous: PersistedScopeState): PersistedScopeState {
+  const rangeValid =
+    dateValidationMessage(scope.from) === null &&
+    dateValidationMessage(scope.to) === null &&
+    scope.from <= scope.to
+
+  return {
+    categories: categoriesValidationMessage(scope.categories) === null ? scope.categories.trim() : previous.categories,
+    timeMode: scope.timeMode,
+    day: dateValidationMessage(scope.day) === null ? scope.day : null,
+    month: monthValidationMessage(scope.month) === null ? scope.month : null,
+    from: rangeValid ? scope.from : null,
+    to: rangeValid ? scope.to : null,
+  }
+}
+
+function samePersistedScopeState(left: PersistedScopeState, right: PersistedScopeState) {
+  return (
+    left.categories === right.categories &&
+    left.timeMode === right.timeMode &&
+    left.day === right.day &&
+    left.month === right.month &&
+    left.from === right.from &&
+    left.to === right.to
+  )
 }
 
 function defaultScopeState(): ScopeState {
   const today = new Date()
-  const currentMonthValue = toMonthInputValue(today)
-  const currentMonthParts = splitMonthValue(currentMonthValue)
   return {
     categories: '',
     timeMode: 'day',
     day: toDateInputValue(today),
-    monthYear: currentMonthParts.monthYear,
-    monthNumber: currentMonthParts.monthNumber,
+    month: toMonthInputValue(today),
     from: toDateInputValue(addDays(today, -1)),
     to: toDateInputValue(today),
   }
@@ -340,24 +370,29 @@ function loadSavedScope(): ScopeState {
   const defaults = defaultScopeState()
   if (typeof window === 'undefined') return defaults
   try {
-    const raw = window.localStorage.getItem(SCOPE_STORAGE_KEY) ?? window.localStorage.getItem(LEGACY_SCOPE_STORAGE_KEY)
+    const raw =
+      window.localStorage.getItem(SCOPE_STORAGE_KEY) ??
+      window.localStorage.getItem(PREVIOUS_SCOPE_STORAGE_KEY) ??
+      window.localStorage.getItem(OLDER_SCOPE_STORAGE_KEY) ??
+      window.localStorage.getItem(LEGACY_SCOPE_STORAGE_KEY)
     if (!raw) return defaults
-    const parsed = JSON.parse(raw) as Partial<ScopeState> & { month?: string }
-    const monthParts =
-      typeof parsed.monthYear === 'string' || typeof parsed.monthNumber === 'string'
-        ? {
-            monthYear: formatMonthYearDraft(parsed.monthYear),
-            monthNumber: formatMonthNumberDraft(parsed.monthNumber),
-          }
-        : splitMonthValue(parsed.month)
+    const parsed = JSON.parse(raw) as Partial<PersistedScopeState> & { monthYear?: unknown; monthNumber?: unknown; month?: unknown }
+    const monthCandidate =
+      typeof parsed.month === 'string' || parsed.month === null ? parsed.month : joinLegacyMonthValue(parsed.monthYear, parsed.monthNumber)
+    const restoredRange = restoreValidRange(
+      {
+        from: parsed.from ?? null,
+        to: parsed.to ?? null,
+      },
+      defaults,
+    )
     return {
-      categories: typeof parsed.categories === 'string' ? parsed.categories : defaults.categories,
-      timeMode: parsed.timeMode === 'month' || parsed.timeMode === 'range' ? parsed.timeMode : 'day',
-      day: normalizeDateDraft(parsed.day, defaults.day),
-      monthYear: monthParts.monthYear || defaults.monthYear,
-      monthNumber: monthParts.monthNumber || defaults.monthNumber,
-      from: normalizeDateDraft(parsed.from, defaults.from),
-      to: normalizeDateDraft(parsed.to, defaults.to),
+      categories: restoreValidCategories(parsed.categories, defaults.categories),
+      timeMode: normalizeTimeMode(parsed.timeMode),
+      day: restoreValidDate(parsed.day, defaults.day),
+      month: restoreValidMonth(monthCandidate, defaults.month),
+      from: restoredRange.from,
+      to: restoredRange.to,
     }
   } catch {
     return defaults
@@ -416,14 +451,14 @@ function resolveScope(scope: ScopeState): ScopeResolution {
   }
 
   if (scope.timeMode === 'month') {
-    const monthError = monthValidationMessage(scope.monthYear, scope.monthNumber)
+    const monthError = monthValidationMessage(scope.month)
     if (monthError) {
       return {
         payload,
         error: monthError,
       }
     }
-    payload.month = joinMonthValue(scope.monthYear, scope.monthNumber)
+    payload.month = scope.month
     return { payload, error: null }
   }
 
@@ -683,12 +718,14 @@ function MaskedDateField({
   value,
   invalid,
   showGhostHint = false,
+  ghostHintText = 'YYYY-MM-DD',
   onChange,
 }: {
   label: string
   value: string
   invalid?: boolean
   showGhostHint?: boolean
+  ghostHintText?: string
   onChange: (value: string) => void
 }) {
   return (
@@ -697,17 +734,17 @@ function MaskedDateField({
       <div className={showGhostHint ? 'input-ghost-shell hint-visible' : 'input-ghost-shell'}>
         <input
           type="text"
-          inputMode="numeric"
+          inputMode="text"
           autoComplete="off"
           spellCheck={false}
           maxLength={10}
           placeholder="YYYY-MM-DD"
           value={value}
-          onChange={(event) => onChange(formatDateDraft(event.target.value))}
+          onChange={(event) => onChange(event.target.value)}
           aria-invalid={invalid ? true : undefined}
           className={invalid ? 'date-mask-input input-invalid' : 'date-mask-input'}
         />
-        <InputGhostHint text="YYYY-MM-DD" visible={showGhostHint} />
+        <InputGhostHint text={ghostHintText} visible={showGhostHint} />
       </div>
     </label>
   )
@@ -730,13 +767,13 @@ function MaskedMonthField({
       <div className={showGhostHint ? 'input-ghost-shell hint-visible' : 'input-ghost-shell'}>
         <input
           type="text"
-          inputMode="numeric"
+          inputMode="text"
           autoComplete="off"
           spellCheck={false}
           maxLength={7}
           placeholder="YYYY-MM"
           value={value}
-          onChange={(event) => onChange(formatMonthDraft(event.target.value))}
+          onChange={(event) => onChange(event.target.value)}
           aria-invalid={invalid ? true : undefined}
           className={invalid ? 'month-mask-input input-invalid' : 'month-mask-input'}
         />
@@ -757,13 +794,13 @@ function ForceChip({
 }) {
   return (
     <label className="force-chip">
-      <span className="force-chip-label">{label}</span>
       <input
         className="force-chip-input"
         type="checkbox"
         checked={checked}
         onChange={(event) => onChange(event.target.checked)}
       />
+      <span className="force-chip-label">{label}</span>
       <span className="force-chip-indicator" aria-hidden="true">
         <span className="force-chip-thumb" />
       </span>
@@ -777,6 +814,7 @@ function StepCard({
   detail,
   running,
   disabled,
+  disabledReason,
   config,
   onRun,
 }: {
@@ -785,9 +823,16 @@ function StepCard({
   detail: string
   running: boolean
   disabled: boolean
+  disabledReason?: string | null
   config?: ReactNode
   onRun: () => void
 }) {
+  const runButton = (
+    <button type="button" className="primary-button step-card-run" onClick={onRun} disabled={disabled}>
+      {running ? 'Running…' : 'Run'}
+    </button>
+  )
+
   return (
     <article className="step-card">
       <div className="step-card-top">
@@ -799,9 +844,13 @@ function StepCard({
         <div className="step-card-actions">
           {config ? <div className="step-card-config">{config}</div> : null}
 
-          <button type="button" className="primary-button step-card-run" onClick={onRun} disabled={disabled}>
-            {running ? 'Running…' : 'Run'}
-          </button>
+          {disabled && disabledReason ? (
+            <HoverTooltip content={disabledReason} anchorClassName="step-card-run-tooltip">
+              <span className="step-card-run-tooltip-target">{runButton}</span>
+            </HoverTooltip>
+          ) : (
+            runButton
+          )}
         </div>
       </div>
 
@@ -970,7 +1019,12 @@ function App() {
   const [selectedJobChildren, setSelectedJobChildren] = useState<Job[]>([])
   const [selectedJobAttempts, setSelectedJobAttempts] = useState<Job[]>([])
   const [exportsData, setExportsData] = useState<ExportRow[]>([])
-  const [scope, setScope] = useState<ScopeState>(() => loadSavedScope())
+  const initialScopeRef = useRef<ScopeState | null>(null)
+  if (initialScopeRef.current === null) {
+    initialScopeRef.current = loadSavedScope()
+  }
+  const [scope, setScope] = useState<ScopeState>(initialScopeRef.current)
+  const persistedScopeRef = useRef<PersistedScopeState>(createPersistedScopeSnapshot(initialScopeRef.current))
   const [syncArxivForce, setSyncArxivForce] = useState(false)
   const [syncLinksForce, setSyncLinksForce] = useState(false)
   const [exportOutputName, setExportOutputName] = useState('')
@@ -1021,18 +1075,9 @@ function App() {
   const dayFieldError = useMemo(() => (scope.timeMode === 'day' ? dateValidationMessage(scope.day) : null), [scope.day, scope.timeMode])
   const dayFieldInvalid = useMemo(() => scope.timeMode === 'day' && dateValidationMessage(scope.day) !== null, [scope.day, scope.timeMode])
   const dayShowGhostHint = useMemo(() => dayFieldError !== null && hasTypedValue(scope.day), [dayFieldError, scope.day])
-  const monthFieldError = useMemo(
-    () => (scope.timeMode === 'month' ? monthValidationMessage(scope.monthYear, scope.monthNumber) : null),
-    [scope.monthNumber, scope.monthYear, scope.timeMode],
-  )
-  const monthFieldInvalid = useMemo(
-    () => scope.timeMode === 'month' && monthValidationMessage(scope.monthYear, scope.monthNumber) !== null,
-    [scope.monthNumber, scope.monthYear, scope.timeMode],
-  )
-  const monthShowGhostHint = useMemo(
-    () => monthFieldError !== null && hasTypedValue(joinMonthValue(scope.monthYear, scope.monthNumber)),
-    [monthFieldError, scope.monthNumber, scope.monthYear],
-  )
+  const monthFieldError = useMemo(() => (scope.timeMode === 'month' ? monthValidationMessage(scope.month) : null), [scope.month, scope.timeMode])
+  const monthFieldInvalid = useMemo(() => scope.timeMode === 'month' && monthValidationMessage(scope.month) !== null, [scope.month, scope.timeMode])
+  const monthShowGhostHint = useMemo(() => monthFieldError !== null && hasTypedValue(scope.month), [monthFieldError, scope.month])
   const rangeFromFieldError = useMemo(() => (scope.timeMode === 'range' ? dateValidationMessage(scope.from) : null), [scope.from, scope.timeMode])
   const rangeToFieldError = useMemo(() => (scope.timeMode === 'range' ? dateValidationMessage(scope.to) : null), [scope.timeMode, scope.to])
   const rangeOrderInvalid = useMemo(
@@ -1041,8 +1086,15 @@ function App() {
   )
   const rangeFromFieldInvalid = useMemo(() => scope.timeMode === 'range' && (rangeFromFieldError !== null || rangeOrderInvalid), [rangeFromFieldError, rangeOrderInvalid, scope.timeMode])
   const rangeToFieldInvalid = useMemo(() => scope.timeMode === 'range' && (rangeToFieldError !== null || rangeOrderInvalid), [rangeOrderInvalid, rangeToFieldError, scope.timeMode])
-  const rangeFromShowGhostHint = useMemo(() => rangeFromFieldError !== null && hasTypedValue(scope.from), [rangeFromFieldError, scope.from])
-  const rangeToShowGhostHint = useMemo(() => rangeToFieldError !== null && hasTypedValue(scope.to), [rangeToFieldError, scope.to])
+  const rangeGhostHintText = useMemo(() => (rangeOrderInvalid ? RANGE_ORDER_HINT : 'YYYY-MM-DD'), [rangeOrderInvalid])
+  const rangeFromShowGhostHint = useMemo(
+    () => hasTypedValue(scope.from) && (rangeFromFieldError !== null || rangeOrderInvalid),
+    [rangeFromFieldError, rangeOrderInvalid, scope.from],
+  )
+  const rangeToShowGhostHint = useMemo(
+    () => hasTypedValue(scope.to) && (rangeToFieldError !== null || rangeOrderInvalid),
+    [rangeOrderInvalid, rangeToFieldError, scope.to],
+  )
   const queueModeLabel = health?.queue_mode === 'serial' ? 'serial queue' : 'loading queue mode'
   const githubRuntimeLabel = health
     ? health.github_auth_configured
@@ -1053,6 +1105,22 @@ function App() {
   const liveScope = useMemo(() => resolveScope(scope), [scope])
   const filteredPaperIds = previewTab === 'papers' ? visibleKeys : []
   const filteredPaperExportReady = previewTab === 'papers' && filteredPaperIds.length > 0
+
+  const runDisabledReason = useCallback(
+    (jobType: 'sync-arxiv' | 'sync-links' | 'enrich', title: string) => {
+      if (launchingJob === jobType) {
+        return `${title} is already being queued.`
+      }
+      if (launchingJob !== null) {
+        return 'Wait for the current task request to finish before starting another step.'
+      }
+      if (liveScope.error !== null) {
+        return liveScope.error
+      }
+      return null
+    },
+    [launchingJob, liveScope.error],
+  )
 
   usePointerDownOutside(exportMenuRef, () => {
     if (exportMenuRef.current?.open) {
@@ -1084,7 +1152,10 @@ function App() {
   useEffect(() => {
     if (typeof window === 'undefined') return
     try {
-      window.localStorage.setItem(SCOPE_STORAGE_KEY, JSON.stringify(scope))
+      const nextPersistedScope = createPersistableScope(scope, persistedScopeRef.current)
+      if (samePersistedScopeState(nextPersistedScope, persistedScopeRef.current)) return
+      window.localStorage.setItem(SCOPE_STORAGE_KEY, JSON.stringify(nextPersistedScope))
+      persistedScopeRef.current = nextPersistedScope
     } catch {
       // Ignore storage failures. The UI can still operate without persistence.
     }
@@ -2772,17 +2843,10 @@ function App() {
               />
             ) : scope.timeMode === 'month' ? (
               <MaskedMonthField
-                value={joinMonthValue(scope.monthYear, scope.monthNumber)}
+                value={scope.month}
                 invalid={monthFieldInvalid}
                 showGhostHint={monthShowGhostHint}
-                onChange={(value) => {
-                  const nextMonth = splitMonthValue(value)
-                  setScope((current) => ({
-                    ...current,
-                    monthYear: nextMonth.monthYear,
-                    monthNumber: nextMonth.monthNumber,
-                  }))
-                }}
+                onChange={(value) => setScope((current) => ({ ...current, month: value }))}
               />
             ) : (
               <div className="range-fields">
@@ -2791,6 +2855,7 @@ function App() {
                   value={scope.from}
                   invalid={rangeFromFieldInvalid}
                   showGhostHint={rangeFromShowGhostHint}
+                  ghostHintText={rangeGhostHintText}
                   onChange={(value) => setScope((current) => ({ ...current, from: value }))}
                 />
 
@@ -2799,6 +2864,7 @@ function App() {
                   value={scope.to}
                   invalid={rangeToFieldInvalid}
                   showGhostHint={rangeToShowGhostHint}
+                  ghostHintText={rangeGhostHintText}
                   onChange={(value) => setScope((current) => ({ ...current, to: value }))}
                 />
               </div>
@@ -2820,6 +2886,7 @@ function App() {
             detail={syncArxivForce ? 'Pull arXiv archive results and ignore TTL for this run.' : 'Pull arXiv archive results into the database.'}
             running={launchingJob === 'sync-arxiv'}
             disabled={liveScope.error !== null || launchingJob !== null}
+            disabledReason={runDisabledReason('sync-arxiv', 'Sync arXiv')}
             onRun={() => launchJob('sync-arxiv')}
             config={
               <ForceChip checked={syncArxivForce} label="Force arXiv refresh" onChange={setSyncArxivForce} />
@@ -2832,6 +2899,7 @@ function App() {
             detail={syncLinksForce ? 'Resolve repos in the selected publish-date scope and ignore TTL for this run.' : 'Resolve GitHub repos in the selected publish-date scope.'}
             running={launchingJob === 'sync-links'}
             disabled={liveScope.error !== null || launchingJob !== null}
+            disabledReason={runDisabledReason('sync-links', 'Find repos')}
             onRun={() => launchJob('sync-links')}
             config={
               <ForceChip checked={syncLinksForce} label="Force link refresh" onChange={setSyncLinksForce} />
@@ -2844,6 +2912,7 @@ function App() {
             detail="Refresh stars and fast-changing repo metadata in the selected publish-date scope."
             running={launchingJob === 'enrich'}
             disabled={liveScope.error !== null || launchingJob !== null}
+            disabledReason={runDisabledReason('enrich', 'Refresh metadata')}
             onRun={() => launchJob('enrich')}
           />
         </div>

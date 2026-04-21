@@ -385,10 +385,25 @@ summary:focus {
 .step-card-config {
   flex: 0 0 auto;
   min-width: 0;
+  display: inline-flex;
+  align-items: stretch;
 }
 
 .step-card-run {
   flex: 0 0 auto;
+}
+
+.step-card-run-tooltip {
+  display: inline-flex;
+}
+
+.step-card-run-tooltip-target {
+  display: inline-flex;
+  cursor: not-allowed;
+}
+
+.step-card-run:disabled {
+  pointer-events: none;
 }
 
 .step-index {
@@ -463,7 +478,7 @@ summary:focus {
 .primary-button:disabled,
 .ghost-button:disabled {
   opacity: 0.7;
-  cursor: progress;
+  cursor: not-allowed;
   transform: none;
 }
 
@@ -508,20 +523,33 @@ summary:focus {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  min-height: 30px;
-  padding: 0 8px 0 10px;
-  border: 1px solid rgba(26, 91, 71, 0.12);
-  border-radius: 999px;
   background: rgba(247, 250, 247, 0.92);
-  font-size: 11px;
   color: var(--muted);
-  cursor: pointer;
   transition:
     border-color 120ms ease,
     background 120ms ease,
     color 120ms ease,
     transform 120ms ease,
     box-shadow 120ms ease;
+}
+
+.column-picker-item {
+  min-height: 30px;
+  padding: 0 8px 0 10px;
+  border: 1px solid rgba(26, 91, 71, 0.12);
+  border-radius: 999px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.force-chip {
+  min-height: 38px;
+  padding: 0 12px;
+  border: 1px solid rgba(26, 91, 71, 0.14);
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
 }
 
 .force-chip:hover {
@@ -542,8 +570,8 @@ summary:focus {
 }
 
 .force-chip-indicator {
-  width: 24px;
-  height: 14px;
+  width: 30px;
+  height: 18px;
   display: inline-flex;
   align-items: center;
   padding: 2px;
@@ -556,8 +584,8 @@ summary:focus {
 }
 
 .force-chip-thumb {
-  width: 10px;
-  height: 10px;
+  width: 12px;
+  height: 12px;
   border-radius: 999px;
   background: white;
   box-shadow: 0 1px 2px rgba(31, 40, 36, 0.24);
@@ -570,12 +598,12 @@ summary:focus {
   line-height: 1;
 }
 
-.force-chip-input:checked + .force-chip-indicator {
+.force-chip-input:checked ~ .force-chip-indicator {
   background: rgba(26, 91, 71, 0.82);
 }
 
-.force-chip-input:checked + .force-chip-indicator .force-chip-thumb {
-  transform: translateX(10px);
+.force-chip-input:checked ~ .force-chip-indicator .force-chip-thumb {
+  transform: translateX(12px);
 }
 
 .force-chip:has(.force-chip-input:checked) {
@@ -589,7 +617,7 @@ summary:focus {
 
 .force-chip:has(.force-chip-input:disabled) {
   opacity: 0.75;
-  cursor: progress;
+  cursor: not-allowed;
   transform: none;
 }
 
@@ -1033,6 +1061,15 @@ summary:focus {
   color: #21342d;
 }
 
+.sheet-header-title-tooltip {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sheet-header-title-tooltip .sheet-header-title {
+  width: 100%;
+}
+
 .sheet-header-actions {
   display: inline-flex;
   align-items: center;
@@ -1085,6 +1122,33 @@ summary:focus {
   width: 14px;
   height: 14px;
   display: block;
+}
+
+.hover-tooltip-anchor {
+  min-width: 0;
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+}
+
+.hover-tooltip-bubble {
+  position: fixed;
+  z-index: 90;
+  pointer-events: none;
+}
+
+.hover-tooltip-surface {
+  max-width: min(280px, calc(100vw - 24px));
+  padding: 6px 9px;
+  border-radius: 10px;
+  background: rgba(21, 30, 26, 0.96);
+  color: white;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: 0.01em;
+  box-shadow: 0 14px 32px rgba(12, 18, 15, 0.22);
+  white-space: normal;
 }
 
 .ag-theme-balham input.ag-text-field-input::placeholder,
