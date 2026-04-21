@@ -722,7 +722,7 @@ summary:focus {
 .queue-summary-active,
 .queue-summary-stopping,
 .queue-summary-waiting {
-  background: rgba(173, 117, 40, 0.12);
+  background: rgba(248, 250, 248, 0.94);
 }
 
 .queue-summary-counts {
