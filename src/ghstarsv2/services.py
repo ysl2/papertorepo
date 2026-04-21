@@ -37,6 +37,7 @@ from src.ghstars.providers.huggingface_links import (
 )
 from src.ghstars.storage.raw_cache import RawCacheStore
 from src.ghstarsv2.config import get_settings
+from src.ghstarsv2.job_order import job_execution_order_by
 from src.ghstarsv2.models import (
     ArxivArchiveAppearance,
     ArxivSyncWindow,
@@ -44,6 +45,7 @@ from src.ghstarsv2.models import (
     GitHubRepo,
     Job,
     JobStatus,
+    JobType,
     ObservationStatus,
     Paper,
     PaperRepoState,
@@ -67,6 +69,7 @@ ARXIV_ID_BATCH_SIZE = 100
 ARXIV_LIST_PAGE_SIZE = 2000
 ARXIV_LIST_ABS_LINK_PATTERN = re.compile(r'href\s*=\s*"/abs/([^"#?]+)"', re.IGNORECASE)
 ProgressCallback = Callable[[dict[str, Any]], None]
+StopCheck = Callable[[], None]
 
 
 def ensure_runtime_dirs() -> None:
@@ -80,6 +83,12 @@ def _emit_progress(progress: ProgressCallback | None, stats: dict[str, Any]) -> 
     if progress is None:
         return
     progress(dict(stats))
+
+
+def _run_stop_check(stop_check: StopCheck | None) -> None:
+    if stop_check is None:
+        return
+    stop_check()
 
 
 def _raw_store() -> RawCacheStore:
@@ -175,6 +184,49 @@ def _categories_json_contains_any(categories: list[str]) -> object:
     return or_(*[cast(Paper.categories_json, String).like(f'%"{category}"%') for category in categories])
 
 
+def _is_batch_root_job(job: Job) -> bool:
+    return job.job_type == JobType.sync_arxiv_batch and job.parent_job_id is None
+
+
+def _job_sort_timestamp(value: datetime | None) -> float:
+    coerced = _coerce_utc(value)
+    if coerced is None:
+        return float("-inf")
+    return coerced.timestamp()
+
+
+def _pick_current_queue_job(active_jobs: list[Job]) -> Job | None:
+    if not active_jobs:
+        return None
+    return sorted(
+        active_jobs,
+        key=lambda job: (
+            1 if _is_batch_root_job(job) else 0,
+            -_job_sort_timestamp(job.locked_at),
+            -_job_sort_timestamp(job.started_at),
+            -_job_sort_timestamp(job.created_at),
+            job.id,
+        ),
+    )[0]
+
+
+def get_job_queue_snapshot(db: Session) -> dict[str, Any]:
+    active_jobs = list(db.scalars(select(Job).where(Job.status == JobStatus.running)).all())
+    current_job = _pick_current_queue_job(active_jobs)
+    next_job = db.scalar(select(Job).where(Job.status == JobStatus.pending).order_by(*job_execution_order_by()))
+    if current_job is not None:
+        state = "active"
+    elif next_job is not None:
+        state = "waiting"
+    else:
+        state = "idle"
+    return {
+        "state": state,
+        "current_job_id": current_job.id if current_job is not None else None,
+        "next_job_id": next_job.id if next_job is not None else None,
+    }
+
+
 def _paper_scope_conditions(scope_json: dict[str, Any]) -> list[object]:
     categories = resolve_categories_from_scope_json(scope_json)
     window = resolve_window_from_scope_json(scope_json)
@@ -259,7 +311,12 @@ def get_dashboard_stats(db: Session, scope_json: dict[str, Any]) -> dict[str, An
     ) or 0
     counts["exports"] = db.scalar(select(func.count()).select_from(ExportRecord)) or 0
     counts["pending_jobs"] = db.scalar(select(func.count()).select_from(Job).where(Job.status == JobStatus.pending)) or 0
-    counts["running_jobs"] = db.scalar(select(func.count()).select_from(Job).where(Job.status == JobStatus.running)) or 0
+    counts["stopping_jobs"] = db.scalar(
+        select(func.count()).select_from(Job).where(Job.status == JobStatus.running, Job.stop_requested_at.is_not(None))
+    ) or 0
+    counts["running_jobs"] = db.scalar(
+        select(func.count()).select_from(Job).where(Job.status == JobStatus.running, Job.stop_requested_at.is_(None))
+    ) or 0
     return counts
 
 
@@ -599,10 +656,12 @@ async def _sync_arxiv_archive_month(
     archive_month: date,
     stats: dict[str, int],
     progress: ProgressCallback | None = None,
+    stop_check: StopCheck | None = None,
 ) -> None:
     period = month_label(archive_month)
     skip = 0
     while True:
+        _run_stop_check(stop_check)
         status, body, headers, error = await client.fetch_listing_page(
             category=category,
             period=period,
@@ -630,6 +689,7 @@ async def _sync_arxiv_archive_month(
             break
 
         for batch in _batch_arxiv_ids(arxiv_ids):
+            _run_stop_check(stop_check)
             batch_key = hashlib.sha1(",".join(batch).encode("utf-8")).hexdigest()[:16]
             feed_status, feed_body, feed_headers, feed_error = await client.fetch_id_list_feed(batch)
             if feed_error or feed_body is None or feed_status is None:
@@ -670,6 +730,7 @@ async def run_sync_arxiv(
     scope_json: dict[str, Any],
     *,
     progress: ProgressCallback | None = None,
+    stop_check: StopCheck | None = None,
 ) -> dict[str, Any]:
     ensure_runtime_dirs()
     settings = get_settings()
@@ -691,6 +752,7 @@ async def run_sync_arxiv(
     async with aiohttp.ClientSession(timeout=build_timeout()) as session:
         client = ArxivMetadataClient(session, min_interval=settings.arxiv_api_min_interval)
         for category in categories:
+            _run_stop_check(stop_check)
             if not archive_months:
                 lock_key = f"arxiv:{category}:all:{max_results}"
                 if not try_advisory_lock(db, lock_key):
@@ -698,6 +760,7 @@ async def run_sync_arxiv(
                     _emit_progress(progress, stats)
                     continue
                 try:
+                    _run_stop_check(stop_check)
                     status, body, headers, error = await client.fetch_category_page(category=category, start=0, max_results=max_results)
                     if error or body is None or status is None:
                         raise RuntimeError(f"{category}: arXiv fetch failed ({error or 'empty response'})")
@@ -723,6 +786,7 @@ async def run_sync_arxiv(
                 continue
 
             for archive_month in archive_months:
+                _run_stop_check(stop_check)
                 start_date, end_date = _archive_month_bounds(archive_month)
                 lock_key = f"arxiv:{category}:{month_label(archive_month)}"
                 if not try_advisory_lock(db, lock_key):
@@ -748,6 +812,7 @@ async def run_sync_arxiv(
                         archive_month=archive_month,
                         stats=stats,
                         progress=progress,
+                        stop_check=stop_check,
                     )
                     if _is_closed_arxiv_window(start_date, end_date):
                         _record_arxiv_window_completed(
@@ -976,6 +1041,7 @@ async def run_sync_links(
     scope_json: dict[str, Any],
     *,
     progress: ProgressCallback | None = None,
+    stop_check: StopCheck | None = None,
 ) -> dict[str, Any]:
     settings = get_settings()
     _required_scope_categories(scope_json)
@@ -1007,6 +1073,7 @@ async def run_sync_links(
             min_interval=settings.huggingface_min_interval,
         )
         for paper in due_papers:
+            _run_stop_check(stop_check)
             lock_key = f"paper:{paper.arxiv_id}"
             if not try_advisory_lock(db, lock_key):
                 stats["skipped_locked"] += 1
@@ -1039,6 +1106,7 @@ async def run_sync_links(
                         }
                     )
 
+                _run_stop_check(stop_check)
                 abs_status, abs_body, abs_headers, abs_error = await arxiv_client.fetch_abs_html(paper.arxiv_id)
                 abs_raw_id = _store_raw_fetch(
                     db,
@@ -1088,6 +1156,7 @@ async def run_sync_links(
 
                 final_urls = _finalize_repo_urls(observations)
                 if not final_urls and settings.huggingface_enabled:
+                    _run_stop_check(stop_check)
                     hf_observations, hf_complete = await _probe_huggingface(db, hf_client, paper)
                     observations.extend(hf_observations)
                     complete = complete and hf_complete
@@ -1096,6 +1165,7 @@ async def run_sync_links(
                     final_urls = _finalize_repo_urls(observations)
 
                 if not final_urls and settings.alphaxiv_enabled:
+                    _run_stop_check(stop_check)
                     alphaxiv_observations, alphaxiv_complete = await _probe_alphaxiv(db, alphaxiv_client, paper)
                     observations.extend(alphaxiv_observations)
                     complete = complete and alphaxiv_complete
@@ -1179,6 +1249,7 @@ async def run_enrich(
     scope_json: dict[str, Any],
     *,
     progress: ProgressCallback | None = None,
+    stop_check: StopCheck | None = None,
 ) -> dict[str, Any]:
     settings = get_settings()
     _required_scope_categories(scope_json)
@@ -1199,6 +1270,7 @@ async def run_enrich(
 
         semaphore = asyncio.Semaphore(1)
         for normalized_url in sorted(repo_urls):
+            _run_stop_check(stop_check)
             lock_key = f"repo:{normalized_url}"
             if not try_advisory_lock(db, lock_key):
                 stats["skipped_locked"] += 1
@@ -1257,9 +1329,15 @@ async def run_enrich(
     return stats
 
 
-def run_export(db: Session, scope_json: dict[str, Any]) -> dict[str, Any]:
+def run_export(
+    db: Session,
+    scope_json: dict[str, Any],
+    *,
+    stop_check: StopCheck | None = None,
+) -> dict[str, Any]:
     ensure_runtime_dirs()
     settings = get_settings()
+    _run_stop_check(stop_check)
     export_mode = str(scope_json.get("export_mode") or "").strip()
     if export_mode == "all_papers":
         papers = all_papers(db)
@@ -1290,6 +1368,7 @@ def run_export(db: Session, scope_json: dict[str, Any]) -> dict[str, Any]:
 
     rows: list[dict[str, Any]] = []
     for paper in papers:
+        _run_stop_check(stop_check)
         state = paper.repo_state
         status = state.stable_status.value if state is not None else RepoStableStatus.unknown.value
         primary_url = state.primary_repo_url if state is not None and state.primary_repo_url else ""
@@ -1315,6 +1394,7 @@ def run_export(db: Session, scope_json: dict[str, Any]) -> dict[str, Any]:
         )
 
     final_path.parent.mkdir(parents=True, exist_ok=True)
+    _run_stop_check(stop_check)
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="", dir=final_path.parent, delete=False) as handle:
         writer = csv.DictWriter(
             handle,
@@ -1340,6 +1420,7 @@ def run_export(db: Session, scope_json: dict[str, Any]) -> dict[str, Any]:
         writer.writerows(rows)
         temp_path = Path(handle.name)
     temp_path.replace(final_path)
+    _run_stop_check(stop_check)
 
     export_record = ExportRecord(
         file_name=final_path.name,

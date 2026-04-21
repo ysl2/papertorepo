@@ -28,6 +28,7 @@ class JobStatus(str, enum.Enum):
     running = "running"
     succeeded = "succeeded"
     failed = "failed"
+    cancelled = "cancelled"
 
 
 class ObservationStatus(str, enum.Enum):
@@ -60,6 +61,8 @@ class Job(Base):
     dedupe_key: Mapped[str] = mapped_column(String(500), index=True)
     stats_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    stop_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    stop_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

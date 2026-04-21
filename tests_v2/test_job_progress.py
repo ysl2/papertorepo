@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 
 from src.ghstarsv2.jobs import claim_next_job, create_job, process_job
@@ -85,8 +87,9 @@ async def test_process_job_failure_keeps_partial_stats(db_env, monkeypatch):
     assert claimed is not None
     assert claimed.id == job.id
 
-    async def fake_run_sync_arxiv(_db, _scope_json, *, progress=None):
+    async def fake_run_sync_arxiv(_db, _scope_json, *, progress=None, stop_check=None):
         assert progress is not None
+        _ = stop_check
         progress({"categories": 1, "pages_fetched": 3})
         raise RuntimeError("boom")
 
@@ -101,3 +104,19 @@ async def test_process_job_failure_keeps_partial_stats(db_env, monkeypatch):
         assert refreshed.stats_json == {"categories": 1, "pages_fetched": 3}
         assert refreshed.error_text == "boom"
         assert refreshed.locked_at is not None
+
+
+def test_claim_next_job_prefers_older_scope_when_created_at_matches(db_env):
+    same_created_at = datetime(2026, 4, 21, 10, 0, 0, 123456, tzinfo=timezone.utc)
+    with session_scope() as db:
+        april = create_job(db, JobType.sync_arxiv, ScopePayload(categories=["cs.CV"], month="2026-04"))
+        may = create_job(db, JobType.sync_arxiv, ScopePayload(categories=["cs.CV"], month="2026-05"))
+        april.created_at = same_created_at
+        may.created_at = same_created_at
+        db.add_all([april, may])
+
+    with session_scope() as db:
+        claimed = claim_next_job(db, "worker:test")
+
+    assert claimed is not None
+    assert claimed.id == april.id

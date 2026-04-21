@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 from fastapi.testclient import TestClient
 import pytest
 
 from src.ghstarsv2.app import app
 from src.ghstarsv2.db import session_scope
-from src.ghstarsv2.jobs import claim_next_job, create_job, create_sync_arxiv_job, process_job, rerun_job, serialize_job
+from src.ghstarsv2.jobs import claim_next_job, create_job, create_sync_arxiv_job, list_child_jobs, process_job, rerun_job, serialize_job
 from src.ghstarsv2.models import Job, JobStatus, JobType
 from src.ghstarsv2.scope import expand_arxiv_child_scope_jsons
 from src.ghstarsv2.schemas import ScopePayload
@@ -143,7 +143,10 @@ def test_rerun_api_supports_batch_parent_and_child_jobs(db_env):
         child = children[0] if children else None
         assert child is not None
         child.status = JobStatus.failed
-        child.finished_at = child.locked_at
+        child.finished_at = child.created_at
+        for sibling in children[1:]:
+            sibling.status = JobStatus.succeeded
+            sibling.finished_at = sibling.created_at
         child_scope = dict(child.scope_json)
         sibling_scopes = [dict(item.scope_json) for item in children[1:]]
 
@@ -233,3 +236,34 @@ def test_list_jobs_root_only_excludes_child_jobs(db_env):
     assert parent.id in ids
     assert child_ids.isdisjoint(ids)
     assert all(row["parent_job_id"] is None for row in rows)
+
+
+def test_batch_child_jobs_default_order_prefers_newer_scope_when_created_at_matches(db_env):
+    same_created_at = datetime(2026, 4, 21, 10, 0, 0, 123456, tzinfo=timezone.utc)
+    with session_scope() as db:
+        parent = create_job(
+            db,
+            JobType.sync_arxiv_batch,
+            ScopePayload(categories=["cs.CV"], **{"from": date(2026, 4, 1), "to": date(2026, 5, 31)}),
+        )
+        april = create_job(
+            db,
+            JobType.sync_arxiv,
+            ScopePayload(categories=["cs.CV"], month="2026-04"),
+            parent_job_id=parent.id,
+        )
+        may = create_job(
+            db,
+            JobType.sync_arxiv,
+            ScopePayload(categories=["cs.CV"], month="2026-05"),
+            parent_job_id=parent.id,
+        )
+        parent.status = JobStatus.succeeded
+        april.created_at = same_created_at
+        may.created_at = same_created_at
+        db.add_all([parent, april, may])
+
+    with session_scope() as db:
+        children = list_child_jobs(db, parent.id)
+
+    assert [child.scope_json["month"] for child in children] == ["2026-05", "2026-04"]

@@ -158,9 +158,13 @@ uv run python main.py jobs
 uv run python main.py papers --categories cs.CV --month 2026-04
 uv run python main.py repos
 uv run python main.py exports
+uv run python main.py debug-arxiv-listing-baseline --categories cs.CV --from 2025-03-01 --to 2026-03-31
+uv run python main.py debug-arxiv-listing-compare --categories cs.CV --from 2025-03-01 --to 2026-03-31
 ```
 
 CLI command names stay hyphenated for user-facing consistency. Internal job type ids stay underscore-based.
+
+The `debug-arxiv-listing-baseline` command fetches arXiv listing pages directly and writes one CSV per month under `data/debug/arxiv_listing_baseline/`. It is intended for gold-standard ingestion debugging, not normal exports.
 
 ## WebUI
 

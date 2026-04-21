@@ -22,8 +22,8 @@ import HoverTooltip from './components/HoverTooltip'
 import usePointerDownOutside from './hooks/usePointerDownOutside'
 import './App.css'
 
-type JobStatus = 'pending' | 'running' | 'succeeded' | 'failed'
-type BatchState = 'queued' | 'running' | 'succeeded' | 'failed'
+type JobStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+type BatchState = 'queued' | 'running' | 'stopping' | 'succeeded' | 'failed' | 'cancelled'
 type LinkStatus = 'found' | 'not_found' | 'ambiguous' | 'unknown'
 type PreviewTab = 'papers' | 'jobs' | 'exports'
 type TimeMode = 'day' | 'month' | 'range'
@@ -50,6 +50,8 @@ type Job = {
   dedupe_key: string
   stats_json: Record<string, unknown>
   error_text: string | null
+  stop_requested_at: string | null
+  stop_reason: string | null
   created_at: string
   started_at: string | null
   finished_at: string | null
@@ -66,8 +68,21 @@ type ChildSummary = {
   total: number
   pending: number
   running: number
+  stopping: number
   succeeded: number
   failed: number
+  cancelled: number
+}
+
+type JobQueueSummaryState = 'idle' | 'waiting' | 'active'
+
+type JobQueueSummary = {
+  state: JobQueueSummaryState
+  running: number
+  pending: number
+  stopping: number
+  current_job: Job | null
+  next_job: Job | null
 }
 
 type Dashboard = {
@@ -80,6 +95,8 @@ type Dashboard = {
   exports: number
   pending_jobs: number
   running_jobs: number
+  stopping_jobs: number
+  job_queue_summary: JobQueueSummary
   recent_jobs: Job[]
 }
 
@@ -180,10 +197,16 @@ type JobGridRow = Record<string, unknown> & {
   attempt_count?: unknown
   attempt_rank?: unknown
   attempt_relation_label?: unknown
+  can_stop?: unknown
+  stop_busy?: unknown
 }
 
 type JobRerunCellRendererProps = CustomCellRendererProps<JobGridRow> & {
   onRerun?: (jobId: string) => void
+}
+
+type JobStopCellRendererProps = CustomCellRendererProps<JobGridRow> & {
+  onStop?: (jobId: string) => void
 }
 
 type JobChildrenChevronCellRendererProps = CustomCellRendererProps<JobGridRow> & {
@@ -528,6 +551,19 @@ function formatSeconds(value: number | null | undefined) {
   return `${rounded}s`
 }
 
+function formatInteger(value: number) {
+  return value.toLocaleString('en-US')
+}
+
+function pluralize(value: number, singular: string, plural = `${singular}s`) {
+  return `${formatInteger(value)} ${value === 1 ? singular : plural}`
+}
+
+function numericStat(stats: Record<string, unknown>, key: string) {
+  const value = stats[key]
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
 function summarizeStats(stats: Record<string, unknown>, emptyLabel = 'no stats yet') {
   const items = Object.entries(stats)
     .filter(([, value]) => value !== null && value !== '' && value !== 0)
@@ -539,6 +575,35 @@ function summarizeStats(stats: Record<string, unknown>, emptyLabel = 'no stats y
 function parseJobTime(value: string) {
   const timestamp = Date.parse(value)
   return Number.isNaN(timestamp) ? 0 : timestamp
+}
+
+function scopeWindowSortKeys(scope: Record<string, unknown>) {
+  const day = typeof scope.day === 'string' && scope.day ? scope.day : null
+  const month = typeof scope.month === 'string' && scope.month ? scope.month : null
+  const fromDate = typeof scope.from === 'string' && scope.from ? scope.from : null
+  const toDate = typeof scope.to === 'string' && scope.to ? scope.to : null
+  const monthStart = month ? `${month}-01` : null
+  const monthEnd = month ? `${month}-31` : null
+
+  return {
+    start: day || fromDate || monthStart || toDate || '',
+    end: day || toDate || monthEnd || fromDate || '',
+  }
+}
+
+function compareJobDisplayOrder(left: Pick<Job, 'created_at' | 'scope_json' | 'id'>, right: Pick<Job, 'created_at' | 'scope_json' | 'id'>) {
+  const createdDelta = parseJobTime(right.created_at) - parseJobTime(left.created_at)
+  if (createdDelta !== 0) return createdDelta
+
+  const leftScope = scopeWindowSortKeys(left.scope_json)
+  const rightScope = scopeWindowSortKeys(right.scope_json)
+  const startDelta = rightScope.start.localeCompare(leftScope.start)
+  if (startDelta !== 0) return startDelta
+
+  const endDelta = rightScope.end.localeCompare(leftScope.end)
+  if (endDelta !== 0) return endDelta
+
+  return right.id.localeCompare(left.id)
 }
 
 function shortId(value: string) {
@@ -570,41 +635,155 @@ function jobTypeLabel(jobType: string) {
   }
 }
 
+function stepJobLabel(stepJob: StepJob) {
+  switch (stepJob) {
+    case 'sync-arxiv':
+      return 'Sync arXiv'
+    case 'sync-links':
+      return 'Find repos'
+    case 'enrich':
+      return 'Refresh metadata'
+    case 'export':
+      return 'Export'
+  }
+}
+
 function jobDisplayStatus(job: Job) {
+  if (job.status === 'running' && job.stop_requested_at) return 'stopping'
   return job.batch_state || job.status
 }
 
 function childSummaryLabel(summary: ChildSummary | null) {
   if (!summary) return '—'
   const parts = [`${summary.succeeded}/${summary.total} succeeded`]
+  if (summary.stopping > 0) parts.push(`${summary.stopping} stopping`)
   if (summary.running > 0) parts.push(`${summary.running} running`)
   if (summary.pending > 0) parts.push(`${summary.pending} queued`)
+  if (summary.cancelled > 0) parts.push(`${summary.cancelled} cancelled`)
   if (summary.failed > 0) parts.push(`${summary.failed} failed`)
   return parts.join(' · ')
 }
 
 function jobSummary(job: Job) {
-  if (job.error_text) return job.error_text
+  const displayStatus = jobDisplayStatus(job)
+  if (job.error_text && displayStatus !== 'stopping') return job.error_text
   if (job.job_type === 'sync_arxiv_batch') {
     if (job.batch_state === 'queued') return `Queued · ${childSummaryLabel(job.child_summary)}`
+    if (job.batch_state === 'stopping') return `Stopping · ${childSummaryLabel(job.child_summary)}`
+    if (job.batch_state === 'cancelled') return job.error_text || `Stopped · ${childSummaryLabel(job.child_summary)}`
     return childSummaryLabel(job.child_summary)
   }
-  if (job.status === 'pending') return 'Queued'
-  if (job.status === 'running') {
+  if (displayStatus === 'pending') return 'Queued'
+  if (displayStatus === 'stopping') {
+    const statsSummary = summarizeStats(job.stats_json, 'Stop requested…')
+    return statsSummary === 'Stop requested…' ? statsSummary : `Stopping · ${statsSummary}`
+  }
+  if (displayStatus === 'running') {
     const statsSummary = summarizeStats(job.stats_json, 'Starting…')
     return statsSummary === 'Starting…' ? statsSummary : `Running · ${statsSummary}`
   }
+  if (displayStatus === 'cancelled') return job.error_text || 'Stopped by user.'
   return summarizeStats(job.stats_json)
 }
 
 function isFinishedDisplayState(value: string) {
-  return value === 'succeeded' || value === 'failed'
+  return value === 'succeeded' || value === 'failed' || value === 'cancelled'
 }
 
 function canRerunJob(job: Job) {
   if (job.job_type !== 'sync_arxiv' && job.job_type !== 'sync_arxiv_batch') return false
   if (!isFinishedDisplayState(jobDisplayStatus(job))) return false
   return isLatestAttempt(job)
+}
+
+function canStopJob(job: Job) {
+  const displayStatus = jobDisplayStatus(job)
+  if (job.stop_requested_at) return false
+  if (job.job_type === 'sync_arxiv_batch' && job.parent_job_id === null) {
+    return displayStatus === 'queued' || displayStatus === 'running'
+  }
+  return job.status === 'pending' || job.status === 'running'
+}
+
+function queueCountSummary(summary: Pick<JobQueueSummary, 'running' | 'pending' | 'stopping'>) {
+  const parts: string[] = []
+  if (summary.running > 0) parts.push(`${formatInteger(summary.running)} running`)
+  if (summary.stopping > 0) parts.push(`${formatInteger(summary.stopping)} stopping`)
+  if (summary.pending > 0) parts.push(`${formatInteger(summary.pending)} queued`)
+  if (parts.length === 0) parts.push('0 running', '0 queued')
+  return parts
+}
+
+function queueJobProgressLabel(job: Job) {
+  const displayStatus = jobDisplayStatus(job)
+  if (job.error_text && displayStatus !== 'stopping') return job.error_text
+
+  switch (job.job_type) {
+    case 'sync_arxiv_batch':
+      return childSummaryLabel(job.child_summary)
+    case 'sync_arxiv': {
+      const papersSaved = numericStat(job.stats_json, 'papers_upserted')
+      const listingPages = numericStat(job.stats_json, 'listing_pages_fetched')
+      const metadataBatches = numericStat(job.stats_json, 'metadata_batches_fetched')
+      const ttlSkips = numericStat(job.stats_json, 'windows_skipped_ttl')
+      const parts: string[] = []
+      if (papersSaved && papersSaved > 0) parts.push(`${formatInteger(papersSaved)} papers saved`)
+      if (listingPages && listingPages > 0) parts.push(pluralize(listingPages, 'listing page'))
+      if (metadataBatches && metadataBatches > 0) parts.push(pluralize(metadataBatches, 'metadata batch'))
+      if (ttlSkips && ttlSkips > 0) parts.push(pluralize(ttlSkips, 'TTL skip'))
+      return parts.join(' · ') || (displayStatus === 'stopping' ? 'Stop requested…' : 'Starting arXiv sync…')
+    }
+    case 'sync_links': {
+      const considered = numericStat(job.stats_json, 'papers_considered')
+      const processed = numericStat(job.stats_json, 'papers_processed')
+      const found = numericStat(job.stats_json, 'found')
+      const notFound = numericStat(job.stats_json, 'not_found')
+      const ambiguous = numericStat(job.stats_json, 'ambiguous')
+      const skippedFresh = numericStat(job.stats_json, 'papers_skipped_fresh')
+      const parts: string[] = []
+      if (considered !== null && considered > 0) {
+        parts.push(`${formatInteger(processed ?? 0)} / ${formatInteger(considered)} papers checked`)
+      } else if (processed !== null && processed > 0) {
+        parts.push(`${formatInteger(processed)} papers checked`)
+      }
+      if (found && found > 0) parts.push(`${formatInteger(found)} found`)
+      if (notFound && notFound > 0) parts.push(`${formatInteger(notFound)} not found`)
+      if (ambiguous && ambiguous > 0) parts.push(`${formatInteger(ambiguous)} ambiguous`)
+      if (skippedFresh && skippedFresh > 0) parts.push(`${formatInteger(skippedFresh)} fresh skipped`)
+      return parts.join(' · ') || (displayStatus === 'stopping' ? 'Stop requested…' : 'Starting repo lookup…')
+    }
+    case 'enrich': {
+      const considered = numericStat(job.stats_json, 'repos_considered')
+      const updated = numericStat(job.stats_json, 'updated') ?? 0
+      const unchanged = numericStat(job.stats_json, 'not_modified') ?? 0
+      const missing = numericStat(job.stats_json, 'missing') ?? 0
+      const checked = updated + unchanged + missing
+      const parts: string[] = []
+      if (considered !== null && considered > 0) {
+        parts.push(`${formatInteger(checked)} / ${formatInteger(considered)} repos checked`)
+      } else if (checked > 0) {
+        parts.push(`${formatInteger(checked)} repos checked`)
+      }
+      if (updated > 0) parts.push(`${formatInteger(updated)} updated`)
+      if (unchanged > 0) parts.push(`${formatInteger(unchanged)} unchanged`)
+      if (missing > 0) parts.push(`${formatInteger(missing)} missing`)
+      return parts.join(' · ') || (displayStatus === 'stopping' ? 'Stop requested…' : 'Starting metadata refresh…')
+    }
+    case 'export': {
+      const rows = numericStat(job.stats_json, 'rows')
+      const fileName = typeof job.stats_json.file_name === 'string' && job.stats_json.file_name ? job.stats_json.file_name : null
+      const parts: string[] = []
+      if (rows && rows > 0) parts.push(`${formatInteger(rows)} rows prepared`)
+      if (fileName) parts.push(fileName)
+      return parts.join(' · ') || 'Preparing export…'
+    }
+    default:
+      return jobSummary(job)
+  }
+}
+
+function queueNextJobLabel(job: Job) {
+  return `${jobTypeLabel(job.job_type)} · ${scopeJsonLabel(job.scope_json)}`
 }
 
 function isBatchFolderJob(job: Pick<Job, 'job_type' | 'parent_job_id'>) {
@@ -808,6 +987,80 @@ function ForceChip({
   )
 }
 
+function QueueSummaryCard({
+  summary,
+  launchingJob,
+}: {
+  summary: JobQueueSummary | null
+  launchingJob: StepJob | null
+}) {
+  const showLaunchingState = launchingJob !== null && (!summary || summary.state === 'idle')
+  const currentJob = showLaunchingState ? null : summary?.current_job ?? null
+  const nextJob = showLaunchingState ? null : summary?.next_job ?? null
+  const counts = showLaunchingState
+    ? { running: 0, stopping: 0, pending: 1 }
+    : {
+        running: summary?.running ?? 0,
+        stopping: summary?.stopping ?? 0,
+        pending: summary?.pending ?? 0,
+      }
+
+  let toneClassName = 'loading'
+  let stateLabel = 'Loading'
+  let primary = 'Loading job queue…'
+  const segments: string[] = []
+
+  if (showLaunchingState && launchingJob !== null) {
+    toneClassName = 'waiting'
+    stateLabel = 'Submitting'
+    primary = `Queuing ${stepJobLabel(launchingJob)}…`
+  } else if (!summary) {
+    toneClassName = 'loading'
+    stateLabel = 'Loading'
+    segments.push('Checking worker status and queued jobs')
+  } else if (currentJob) {
+    const displayStatus = jobDisplayStatus(currentJob)
+    toneClassName = displayStatus === 'stopping' ? 'stopping' : 'active'
+    stateLabel = displayStatus === 'stopping' ? 'Stopping' : 'Running'
+    primary = jobTypeLabel(currentJob.job_type)
+    segments.push(scopeJsonLabel(currentJob.scope_json))
+    segments.push(queueJobProgressLabel(currentJob))
+    if (nextJob) segments.push(`Up next: ${queueNextJobLabel(nextJob)}`)
+    else if (counts.pending === 0) segments.push('No queued jobs behind the current run')
+  } else if (summary.state === 'waiting' && nextJob) {
+    toneClassName = 'waiting'
+    stateLabel = 'Waiting'
+    primary = 'Waiting to start'
+    segments.push(`Up next: ${queueNextJobLabel(nextJob)}`)
+  } else {
+    toneClassName = 'idle'
+    stateLabel = 'Idle'
+    primary = 'No jobs are running or waiting'
+  }
+
+  const countsLabel = queueCountSummary(counts).join(' · ')
+
+  return (
+    <div className={`queue-summary queue-summary-${toneClassName}`}>
+      <span className="queue-summary-kicker">Job queue</span>
+      <span className={`queue-summary-state queue-summary-state-${toneClassName}`}>{stateLabel}</span>
+
+      <div className="queue-summary-text" title={[primary, ...segments].join(' · ')}>
+        <strong className="queue-summary-primary">{primary}</strong>
+        {segments.map((segment) => (
+          <span key={segment} className="queue-summary-segment">
+            {segment}
+          </span>
+        ))}
+      </div>
+
+      <span className="queue-summary-counts" title={countsLabel}>
+        {countsLabel}
+      </span>
+    </div>
+  )
+}
+
 function StepCard({
   index,
   title,
@@ -882,6 +1135,33 @@ function JobRerunCellRenderer({ data, onRerun }: JobRerunCellRendererProps) {
       }}
     >
       {busy ? 'Queued…' : 'Re-run'}
+    </button>
+  )
+}
+
+function JobStopCellRenderer({ data, onStop }: JobStopCellRendererProps) {
+  if (!data || data.can_stop !== true) return null
+
+  const jobId = typeof data.id === 'string' ? data.id : ''
+  const busy = data.stop_busy === true
+
+  return (
+    <button
+      type="button"
+      className="grid-action-button danger"
+      data-grid-action="true"
+      disabled={busy}
+      onMouseDown={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+      }}
+      onClick={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        if (jobId) onStop?.(jobId)
+      }}
+    >
+      {busy ? 'Stopping…' : 'Stop'}
     </button>
   )
 }
@@ -1004,6 +1284,7 @@ function App() {
   const drawerPanelRef = useRef<HTMLElement | null>(null)
   const sheetFrameRef = useRef<HTMLDivElement | null>(null)
   const rerunJobRef = useRef<(jobId: string) => void>(() => {})
+  const stopJobRef = useRef<(jobId: string) => void>(() => {})
   const [health, setHealth] = useState<Health | null>(null)
   const [dashboard, setDashboard] = useState<Dashboard | null>(null)
   const [papers, setPapers] = useState<PaperSummary[]>([])
@@ -1037,8 +1318,7 @@ function App() {
   const [visibleKeys, setVisibleKeys] = useState<string[]>([])
   const [launchingJob, setLaunchingJob] = useState<StepJob | null>(null)
   const [rerunningJobId, setRerunningJobId] = useState<string | null>(null)
-  const [banner, setBanner] = useState('Workspace ready.')
-  const [bannerAction, setBannerAction] = useState<PreviewTab | null>(null)
+  const [stoppingJobIds, setStoppingJobIds] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
   const [summaryRefreshTick, setSummaryRefreshTick] = useState(0)
   const [jobsRefreshTick, setJobsRefreshTick] = useState(0)
@@ -1175,9 +1455,16 @@ function App() {
     jobAttemptHistoriesRef.current = jobAttemptHistories
   }, [jobAttemptHistories])
 
-  const activeJobsInList = jobs.some((job) => job.status === 'pending' || job.status === 'running')
+  const activeJobsInList = jobs.some((job) => {
+    const displayStatus = jobDisplayStatus(job)
+    return displayStatus === 'queued' || displayStatus === 'running' || displayStatus === 'stopping'
+  })
   const hasActiveJobs =
-    launchingJob !== null || activeJobsInList || (dashboard?.pending_jobs ?? 0) > 0 || (dashboard?.running_jobs ?? 0) > 0
+    launchingJob !== null ||
+    activeJobsInList ||
+    (dashboard?.pending_jobs ?? 0) > 0 ||
+    (dashboard?.running_jobs ?? 0) > 0 ||
+    (dashboard?.stopping_jobs ?? 0) > 0
 
   useEffect(() => {
     const intervalMs = hasActiveJobs ? ACTIVE_DASHBOARD_POLL_MS : IDLE_DASHBOARD_POLL_MS
@@ -1652,15 +1939,14 @@ function App() {
 
     try {
       setLaunchingJob(jobType)
-      const job = await fetchJson<Job>(`/api/v1/jobs/${jobType}`, {
+      await fetchJson<Job>(`/api/v1/jobs/${jobType}`, {
         method: 'POST',
         body: JSON.stringify(payload),
       })
-      setBanner(`queued ${job.job_type} · ${job.id.slice(0, 8)}`)
-      setBannerAction(jobType === 'export' ? 'exports' : null)
       setSummaryRefreshTick((value) => value + 1)
       setJobsRefreshTick((value) => value + 1)
       setTableRefreshTick((value) => value + 1)
+      setError(null)
       if (jobType === 'export') {
         setExportOutputName('')
         if (exportMenuRef.current) exportMenuRef.current.open = false
@@ -1675,15 +1961,12 @@ function App() {
   async function rerunExistingJob(jobId: string) {
     try {
       setRerunningJobId(jobId)
-      const job = await fetchJson<Job>(`/api/v1/jobs/${jobId}/rerun`, {
+      await fetchJson<Job>(`/api/v1/jobs/${jobId}/rerun`, {
         method: 'POST',
       })
-      setBanner(`queued rerun ${jobTypeLabel(job.job_type)} · ${job.id.slice(0, 8)}`)
-      setBannerAction(null)
       setSummaryRefreshTick((value) => value + 1)
       setJobsRefreshTick((value) => value + 1)
       setTableRefreshTick((value) => value + 1)
-      setPreviewTab('jobs')
       setError(null)
     } catch (err) {
       if (err instanceof Error) setError(err.message)
@@ -1694,6 +1977,27 @@ function App() {
 
   rerunJobRef.current = (jobId: string) => {
     void rerunExistingJob(jobId)
+  }
+
+  async function stopExistingJob(jobId: string) {
+    try {
+      setStoppingJobIds((current) => (current.includes(jobId) ? current : [...current, jobId]))
+      await fetchJson<Job>(`/api/v1/jobs/${jobId}/stop`, {
+        method: 'POST',
+      })
+      setSummaryRefreshTick((value) => value + 1)
+      setJobsRefreshTick((value) => value + 1)
+      setTableRefreshTick((value) => value + 1)
+      setError(null)
+    } catch (err) {
+      if (err instanceof Error) setError(err.message)
+    } finally {
+      setStoppingJobIds((current) => current.filter((value) => value !== jobId))
+    }
+  }
+
+  stopJobRef.current = (jobId: string) => {
+    void stopExistingJob(jobId)
   }
 
   const repoByUrl = useMemo<Record<string, Repo>>(() => {
@@ -1786,6 +2090,8 @@ function App() {
           summary: isHistoryRow ? historySummary : jobSummary(job),
           can_rerun: !isHistoryRow && canRerunJob(job),
           rerun_busy: rerunningJobId === job.id,
+          can_stop: !isHistoryRow && canStopJob(job),
+          stop_busy: stoppingJobIds.includes(job.id),
           children_toggleable: isBatchFolder,
           children_expanded: isBatchFolder && expandedParentJobSet.has(job.id),
           children_loading: isBatchFolder && loadingChildJobParentSet.has(job.id),
@@ -1824,11 +2130,7 @@ function App() {
 
         if (!expandedParentJobSet.has(job.id)) continue
 
-        const childJobs = [...(childJobsByParentId[job.id] ?? [])].sort(
-          (left, right) =>
-            scopeJsonLabel(left.scope_json).localeCompare(scopeJsonLabel(right.scope_json)) ||
-            parseJobTime(right.created_at) - parseJobTime(left.created_at),
-        )
+        const childJobs = [...(childJobsByParentId[job.id] ?? [])].sort(compareJobDisplayOrder)
 
         for (const child of childJobs) {
           const childGroupKey = attemptGroupKey(child)
@@ -1856,6 +2158,7 @@ function App() {
       loadingChildJobParentSet,
       loadingJobHistoryGroupSet,
       rerunningJobId,
+      stoppingJobIds,
     ],
   )
 
@@ -2058,6 +2361,19 @@ function App() {
           onRerun: (jobId: string) => rerunJobRef.current(jobId),
         },
       },
+      {
+        field: 'stop_action',
+        headerName: 'Stop',
+        width: columnWidth('Stop', 108),
+        sortable: false,
+        filter: false,
+        hideable: false,
+        cellRenderer: JobStopCellRenderer,
+        cellRendererParams: {
+          suppressMouseEventHandling: suppressInteractiveCellMouseHandling,
+          onStop: (jobId: string) => stopJobRef.current(jobId),
+        },
+      },
       { field: 'id', headerName: 'Job ID', width: columnWidth('Job ID', 280), hide: true, cellClass: 'mono-cell' },
       {
         field: 'search_blob',
@@ -2122,16 +2438,14 @@ function App() {
   const selectedJob = (selectedJobId ? jobsById.get(selectedJobId) : null) || null
   const selectedExport = exportsData.find((row) => row.id === selectedExportId) || null
   const selectedJobCanRerun = selectedJob ? canRerunJob(selectedJob) : false
+  const selectedJobCanStop = selectedJob ? canStopJob(selectedJob) : false
   const paperProgressTotal =
     dashboard && dashboard.papers > 0 ? Math.min(dashboard.papers, PAPER_PREVIEW_LIMIT) : undefined
   const selectedJobLatestChildren = useMemo(
     () =>
       selectedJobChildren
         .filter((job) => isLatestAttempt(job))
-        .sort(
-          (left, right) =>
-            scopeJsonLabel(left.scope_json).localeCompare(scopeJsonLabel(right.scope_json)) || parseJobTime(right.created_at) - parseJobTime(left.created_at),
-        ),
+        .sort(compareJobDisplayOrder),
     [selectedJobChildren],
   )
 
@@ -2429,6 +2743,16 @@ function App() {
                   {rerunningJobId === selectedJob.id ? 'Queued…' : 'Re-run'}
                 </button>
               ) : null}
+              {selectedJobCanStop ? (
+                <button
+                  type="button"
+                  className="ghost-button danger-button"
+                  onClick={() => void stopExistingJob(selectedJob.id)}
+                  disabled={stoppingJobIds.includes(selectedJob.id)}
+                >
+                  {stoppingJobIds.includes(selectedJob.id) ? 'Stopping…' : 'Stop'}
+                </button>
+              ) : null}
               <button type="button" className="ghost-button" onClick={closeDrawer}>
                 Close
               </button>
@@ -2457,6 +2781,7 @@ function App() {
           ) : null}
           <DetailBlock label="Scope" value={scopeJsonLabel(selectedJob.scope_json)} />
           <DetailBlock label="Started at" value={formatTime(selectedJob.started_at)} />
+          <DetailBlock label="Stop requested at" value={formatTime(selectedJob.stop_requested_at)} />
           <DetailBlock label="Last heartbeat" value={formatTime(selectedJob.locked_at)} />
           <DetailBlock label="Finished at" value={formatTime(selectedJob.finished_at)} />
           {selectedJob.attempt_count > 1 ? (
@@ -2493,7 +2818,18 @@ function App() {
           {selectedJob.child_summary ? <DetailBlock label="Latest child job summary" value={childSummaryLabel(selectedJob.child_summary)} /> : null}
           <DetailBlock
             label="Stats"
-            value={<p className="long-text">{summarizeStats(selectedJob.stats_json, selectedJob.status === 'running' ? 'Starting…' : 'no stats yet')}</p>}
+            value={
+              <p className="long-text">
+                {summarizeStats(
+                  selectedJob.stats_json,
+                  jobDisplayStatus(selectedJob) === 'stopping'
+                    ? 'Stop requested…'
+                    : selectedJob.status === 'running'
+                      ? 'Starting…'
+                      : 'no stats yet',
+                )}
+              </p>
+            }
           />
           {selectedJob.error_text ? <DetailBlock label="Error" value={<p className="long-text">{selectedJob.error_text}</p>} /> : null}
           {selectedJob.job_type === 'sync_arxiv_batch' ? (
@@ -2520,7 +2856,16 @@ function App() {
                             {jobSummary(child)} · created {formatTime(child.created_at)}
                           </p>
                         </div>
-                        {canRerunJob(child) ? (
+                        {canStopJob(child) ? (
+                          <button
+                            type="button"
+                            className="ghost-button child-job-action danger-button"
+                            onClick={() => void stopExistingJob(child.id)}
+                            disabled={stoppingJobIds.includes(child.id)}
+                          >
+                            {stoppingJobIds.includes(child.id) ? 'Stopping…' : 'Stop'}
+                          </button>
+                        ) : canRerunJob(child) ? (
                           <button
                             type="button"
                             className="ghost-button child-job-action"
@@ -2690,7 +3035,6 @@ function App() {
               className="ghost-button"
               onClick={() => {
                 handlePreviewTabChange('exports')
-                setBannerAction(null)
               }}
             >
               View exports
@@ -2733,7 +3077,7 @@ function App() {
         onSelectedKeyChange={setSelectedJobId}
         onDisplayedKeysChange={handleDisplayedKeysChange}
         quickSearch={deferredTableSearch}
-        persistenceId="ghstars-jobs"
+        persistenceId="ghstars-jobs-v2"
         emptyMessage="No jobs yet."
         toolbarLeading={sheetToolbarLeading}
         toolbarActions={sheetToolbarActions}
@@ -2936,21 +3280,7 @@ function App() {
         </div>
 
         <div className="feedback-strip">
-          <div className={bannerAction ? 'message-box feedback-message has-action' : 'message-box feedback-message'}>
-            <span>{banner}</span>
-            {bannerAction ? (
-              <button
-                type="button"
-                className="ghost-button feedback-link"
-                onClick={() => {
-                  handlePreviewTabChange(bannerAction)
-                  setBannerAction(null)
-                }}
-              >
-                View exports
-              </button>
-            ) : null}
-          </div>
+          <QueueSummaryCard summary={dashboard?.job_queue_summary ?? null} launchingJob={launchingJob} />
           {error ? <div className="error-box">{error}</div> : null}
         </div>
       </section>

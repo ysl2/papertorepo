@@ -164,6 +164,35 @@ def test_health_reports_serial_queue_runtime_metadata(db_env, monkeypatch):
     clear_settings_cache()
 
 
+def test_public_dashboard_returns_job_queue_summary(db_env):
+    from src.ghstarsv2.jobs import create_job
+    from src.ghstarsv2.models import JobStatus, JobType
+    from src.ghstarsv2.schemas import ScopePayload
+
+    with session_scope() as db:
+        queued_job = create_job(db, JobType.enrich, ScopePayload(categories=["cs.CV"], day=date(2026, 4, 21)))
+        running_job = create_job(db, JobType.sync_links, ScopePayload(categories=["cs.CV"], day=date(2026, 4, 21)))
+        running_job.status = JobStatus.running
+        running_job.started_at = utc_now()
+        running_job.locked_at = utc_now()
+        running_job.locked_by = "worker-a"
+        db.add(running_job)
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/dashboard")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["job_queue_summary"]["state"] == "active"
+    assert payload["job_queue_summary"]["running"] == 1
+    assert payload["job_queue_summary"]["pending"] == 1
+    assert payload["job_queue_summary"]["stopping"] == 0
+    assert payload["job_queue_summary"]["current_job"]["id"] == running_job.id
+    assert payload["job_queue_summary"]["current_job"]["job_type"] == "sync_links"
+    assert payload["job_queue_summary"]["next_job"]["id"] == queued_job.id
+    assert payload["job_queue_summary"]["next_job"]["job_type"] == "enrich"
+
+
 @pytest.mark.parametrize(
     "path",
     [

@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
@@ -11,8 +12,10 @@ import uvicorn
 from sqlalchemy import select
 
 from src.ghstarsv2.api import serialize_paper
+from src.ghstarsv2.debug_arxiv_listing import compare_listing_baseline_against_db, generate_listing_baseline
 from src.ghstarsv2.db import session_scope
-from src.ghstarsv2.jobs import init_database, rerun_job, run_worker_forever, serialize_jobs
+from src.ghstarsv2.job_order import job_display_order_by
+from src.ghstarsv2.jobs import init_database, rerun_job, run_worker_forever, serialize_jobs, stop_job
 from src.ghstarsv2.models import ExportRecord, GitHubRepo, Job, JobType
 from src.ghstarsv2.schemas import ExportRead, RepoRead, ScopePayload, validate_scope_for_job
 from src.ghstarsv2.scope import build_scope_json
@@ -49,7 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     jobs = subparsers.add_parser("jobs")
     jobs.add_argument("--limit", type=int, default=50)
-    jobs.add_argument("action", nargs="?", choices=["rerun"])
+    jobs.add_argument("action", nargs="?", choices=["rerun", "stop"])
     jobs.add_argument("job_id", nargs="?")
 
     papers = subparsers.add_parser("papers")
@@ -58,6 +61,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     repos = subparsers.add_parser("repos")
     repos.add_argument("--limit", type=int, default=50)
+
+    debug_arxiv_listing_baseline = subparsers.add_parser("debug-arxiv-listing-baseline")
+    _add_scope_arguments(debug_arxiv_listing_baseline, require_categories=True)
+    debug_arxiv_listing_baseline.add_argument("--output-root", type=Path, default=None)
+    debug_arxiv_listing_baseline.add_argument("--page-size", type=int, default=2000)
+
+    debug_arxiv_listing_compare = subparsers.add_parser("debug-arxiv-listing-compare")
+    _add_scope_arguments(debug_arxiv_listing_compare, require_categories=True)
+    debug_arxiv_listing_compare.add_argument("--baseline-root", type=Path, default=None)
+    debug_arxiv_listing_compare.add_argument("--compare-root", type=Path, default=None)
 
     subparsers.add_parser("exports")
     return parser
@@ -115,6 +128,8 @@ def _build_scope_or_exit(args: argparse.Namespace) -> dict[str, Any]:
 def _json_default(value: Any) -> Any:
     if isinstance(value, (date, datetime)):
         return value.isoformat()
+    if isinstance(value, Path):
+        return str(value)
     if hasattr(value, "value"):
         return value.value
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
@@ -125,6 +140,16 @@ def _print_json(value: Any) -> None:
 
 
 async def async_main_from_args(args: argparse.Namespace) -> int:
+    if args.command == "debug-arxiv-listing-baseline":
+        _print_json(
+            await generate_listing_baseline(
+                _build_scope_or_exit(args),
+                output_root=args.output_root,
+                page_size=args.page_size,
+            )
+        )
+        return 0
+
     init_database()
 
     if args.command == "worker":
@@ -161,7 +186,15 @@ async def async_main_from_args(args: argparse.Namespace) -> int:
                     raise SystemExit("jobs rerun requires a job_id")
                 _print_json(serialize_jobs(db, [rerun_job(db, args.job_id)])[0].model_dump(mode="json"))
                 return 0
-            rows = [item.model_dump(mode="json") for item in serialize_jobs(db, list(db.scalars(select(Job).order_by(Job.created_at.desc()).limit(args.limit)).all()))]
+            if args.action == "stop":
+                if not args.job_id:
+                    raise SystemExit("jobs stop requires a job_id")
+                _print_json(serialize_jobs(db, [stop_job(db, args.job_id)])[0].model_dump(mode="json"))
+                return 0
+            rows = [
+                item.model_dump(mode="json")
+                for item in serialize_jobs(db, list(db.scalars(select(Job).order_by(*job_display_order_by()).limit(args.limit)).all()))
+            ]
         _print_json(rows)
         return 0
 
@@ -176,6 +209,18 @@ async def async_main_from_args(args: argparse.Namespace) -> int:
             stmt = select(GitHubRepo).order_by(GitHubRepo.stars.desc().nullslast(), GitHubRepo.checked_at.desc().nullslast()).limit(args.limit)
             rows = [RepoRead.model_validate(item).model_dump(mode="json") for item in db.scalars(stmt).all()]
         _print_json(rows)
+        return 0
+
+    if args.command == "debug-arxiv-listing-compare":
+        with session_scope() as db:
+            _print_json(
+                compare_listing_baseline_against_db(
+                    db,
+                    _build_scope_or_exit(args),
+                    baseline_root=args.baseline_root,
+                    compare_root=args.compare_root,
+                )
+            )
         return 0
 
     if args.command == "exports":

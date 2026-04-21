@@ -1,4 +1,6 @@
-from src.ghstars.providers.arxiv_metadata import parse_papers_from_feed
+import pytest
+
+from src.ghstars.providers.arxiv_metadata import ArxivMetadataClient, parse_papers_from_feed
 
 
 def test_parse_papers_from_feed_extracts_core_fields():
@@ -27,3 +29,29 @@ def test_parse_papers_from_feed_extracts_core_fields():
     assert paper.authors == ("Alice", "Bob")
     assert paper.categories == ("cs.CV", "cs.LG")
     assert paper.primary_category == "cs.CV"
+
+
+@pytest.mark.anyio
+async def test_fetch_id_list_feed_requests_all_ids(monkeypatch):
+    captured: dict[str, object] = {}
+
+    async def fake_request_text(session, url, *, params, semaphore, rate_limiter, retry_prefix, max_retries=None):
+        captured["session"] = session
+        captured["url"] = url
+        captured["params"] = dict(params)
+        captured["retry_prefix"] = retry_prefix
+        captured["max_retries"] = max_retries
+        return 200, "<feed />", {"Content-Type": "application/atom+xml"}, None
+
+    monkeypatch.setattr("src.ghstars.providers.arxiv_metadata.request_text", fake_request_text)
+
+    client = ArxivMetadataClient(session=object(), min_interval=0.5)
+    status, body, headers, error = await client.fetch_id_list_feed(["2503.00001", "2503.00002", "2503.00003"])
+
+    assert (status, body, headers, error) == (200, "<feed />", {"Content-Type": "application/atom+xml"}, None)
+    assert captured["url"] == "https://export.arxiv.org/api/query"
+    assert captured["params"] == {
+        "id_list": "2503.00001,2503.00002,2503.00003",
+        "max_results": "3",
+    }
+    assert captured["retry_prefix"] == "arXiv metadata id_list query"

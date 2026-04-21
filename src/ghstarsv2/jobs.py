@@ -13,6 +13,8 @@ from sqlalchemy.orm import Session
 
 from src.ghstarsv2.config import get_settings
 from src.ghstarsv2.db import get_engine, session_scope
+from src.ghstarsv2.job_order import job_display_order_by, job_display_sort_key, job_execution_order_by
+from src.ghstarsv2.job_stop import JobStopRequested, mark_job_cancelled, raise_if_job_stop_requested, request_job_stop
 from src.ghstarsv2.models import Job, JobStatus, JobType, utc_now
 from src.ghstarsv2.scope import (
     arxiv_scope_spans_multiple_months,
@@ -130,52 +132,71 @@ def create_sync_arxiv_job(db: Session, scope: ScopePayload, *, parent_job_id: st
 
 def _latest_jobs_by_dedupe(jobs: list[Job]) -> list[Job]:
     latest: dict[str, Job] = {}
-    for job in sorted(jobs, key=lambda item: (item.created_at, item.id), reverse=True):
+    for job in sorted(jobs, key=job_display_sort_key, reverse=True):
         latest.setdefault(job.dedupe_key, job)
     return list(latest.values())
 
 
-def _child_summary_for_batch(scope_json: dict[str, Any], child_jobs: list[Job]) -> ChildSummary:
+def _is_batch_root_job(job: Job) -> bool:
+    return job.job_type == JobType.sync_arxiv_batch and job.parent_job_id is None
+
+
+def _child_summary_for_batch(job: Job, child_jobs: list[Job]) -> ChildSummary:
     latest_jobs = _latest_jobs_by_dedupe(child_jobs)
-    planned_total = len(expand_arxiv_child_scope_jsons(scope_json))
+    planned_total = len(expand_arxiv_child_scope_jsons(job.scope_json))
     latest_total = len(latest_jobs)
     total = max(planned_total, latest_total)
     counts = {
-        JobStatus.pending: 0,
-        JobStatus.running: 0,
-        JobStatus.succeeded: 0,
-        JobStatus.failed: 0,
+        "pending": 0,
+        "running": 0,
+        "stopping": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "cancelled": 0,
     }
-    for job in latest_jobs:
-        counts[job.status] += 1
-    pending = counts[JobStatus.pending] + max(0, total - latest_total)
+    for child in latest_jobs:
+        if child.status == JobStatus.running and child.stop_requested_at is not None:
+            counts["stopping"] += 1
+            continue
+        counts[child.status.value] += 1
+    missing_total = max(0, total - latest_total)
+    if job.stop_requested_at is not None or job.status == JobStatus.cancelled:
+        counts["cancelled"] += missing_total
+    else:
+        counts["pending"] += missing_total
     return ChildSummary(
         total=total,
-        pending=pending,
-        running=counts[JobStatus.running],
-        succeeded=counts[JobStatus.succeeded],
-        failed=counts[JobStatus.failed],
+        pending=counts["pending"],
+        running=counts["running"],
+        stopping=counts["stopping"],
+        succeeded=counts["succeeded"],
+        failed=counts["failed"],
+        cancelled=counts["cancelled"],
     )
 
 
 def _batch_state_for_job(job: Job, child_summary: ChildSummary | None) -> str:
+    if child_summary is not None and child_summary.stopping > 0:
+        return "stopping"
     if job.status == JobStatus.pending:
         return "queued"
     if job.status == JobStatus.running:
-        return "running"
+        return "stopping" if job.stop_requested_at is not None else "running"
     if job.status == JobStatus.failed:
         return "failed"
     if child_summary is None:
-        return "succeeded"
+        return "cancelled" if job.status == JobStatus.cancelled else "succeeded"
+    if child_summary.running > 0 or child_summary.pending > 0:
+        return "stopping" if job.stop_requested_at is not None else "running"
+    if job.status == JobStatus.cancelled or child_summary.cancelled > 0 or job.stop_requested_at is not None:
+        return "cancelled"
     if child_summary.failed > 0:
         return "failed"
-    if child_summary.running > 0 or child_summary.pending > 0:
-        return "running"
     return "succeeded"
 
 
 def list_child_jobs(db: Session, parent_job_id: str) -> list[Job]:
-    return list(db.scalars(select(Job).where(Job.parent_job_id == parent_job_id).order_by(Job.created_at.desc())))
+    return list(db.scalars(select(Job).where(Job.parent_job_id == parent_job_id).order_by(*job_display_order_by())))
 
 
 def _attempt_meta_subquery(*, parent_job_id: str | None = None):
@@ -185,7 +206,7 @@ def _attempt_meta_subquery(*, parent_job_id: str | None = None):
         func.count(Job.id).over(partition_by=partition_by).label("attempt_count"),
         func.row_number().over(
             partition_by=partition_by,
-            order_by=(Job.created_at.desc(), Job.id.desc()),
+            order_by=job_display_order_by(),
         ).label("attempt_rank"),
     )
     if parent_job_id is not None:
@@ -215,7 +236,7 @@ def list_jobs_read(
     stmt = (
         select(Job, attempt_meta.c.attempt_count, attempt_meta.c.attempt_rank)
         .join(attempt_meta, Job.id == attempt_meta.c.job_id)
-        .order_by(Job.created_at.desc(), Job.id.desc())
+        .order_by(*job_display_order_by())
         .limit(limit)
     )
     if root_only and parent_job_id is None:
@@ -243,7 +264,7 @@ def list_job_attempts_read(db: Session, job_id: str, *, limit: int = 100) -> lis
             Job.dedupe_key == job.dedupe_key,
             _parent_job_clause(job.parent_job_id),
         )
-        .order_by(Job.created_at.desc(), Job.id.desc())
+        .order_by(*job_display_order_by())
         .limit(limit)
     )
     rows = list(db.execute(stmt).all())
@@ -265,7 +286,7 @@ def serialize_job(
     child_summary = None
     if job.job_type == JobType.sync_arxiv_batch:
         child_jobs = child_jobs if child_jobs is not None else list_child_jobs(db, job.id)
-        child_summary = _child_summary_for_batch(job.scope_json, child_jobs)
+        child_summary = _child_summary_for_batch(job, child_jobs)
         batch_state = _batch_state_for_job(job, child_summary)
     attempt_meta = attempt_meta or JobAttemptMeta()
 
@@ -278,6 +299,8 @@ def serialize_job(
         dedupe_key=job.dedupe_key,
         stats_json=job.stats_json,
         error_text=job.error_text,
+        stop_requested_at=job.stop_requested_at,
+        stop_reason=job.stop_reason,
         created_at=job.created_at,
         started_at=job.started_at,
         finished_at=job.finished_at,
@@ -301,7 +324,7 @@ def serialize_jobs(
     child_jobs_by_parent: dict[str, list[Job]] = {}
     if batch_parent_ids:
         child_jobs = list(
-            db.scalars(select(Job).where(Job.parent_job_id.in_(batch_parent_ids)).order_by(Job.created_at.desc()))
+            db.scalars(select(Job).where(Job.parent_job_id.in_(batch_parent_ids)).order_by(*job_display_order_by()))
         )
         for child in child_jobs:
             if child.parent_job_id is None:
@@ -332,8 +355,8 @@ def rerun_job(db: Session, job_id: str) -> Job:
 
     scope = build_scope_payload(job.scope_json)
     if job.job_type == JobType.sync_arxiv_batch:
-        child_summary = _child_summary_for_batch(job.scope_json, list_child_jobs(db, job.id))
-        if _batch_state_for_job(job, child_summary) in {"queued", "running"}:
+        child_summary = _child_summary_for_batch(job, list_child_jobs(db, job.id))
+        if _batch_state_for_job(job, child_summary) in {"queued", "running", "stopping"}:
             raise RuntimeError("Only finished jobs can be re-run")
         return create_sync_arxiv_job(db, scope)
     if job.job_type == JobType.sync_arxiv:
@@ -344,7 +367,7 @@ def rerun_job(db: Session, job_id: str) -> Job:
                 Job.dedupe_key == job.dedupe_key,
                 _parent_job_clause(job.parent_job_id),
             )
-            .order_by(Job.created_at.desc())
+            .order_by(*job_display_order_by())
         )
         if latest_attempt is not None and latest_attempt.id != job.id and latest_attempt.status in {JobStatus.pending, JobStatus.running}:
             raise RuntimeError("A newer attempt is still active")
@@ -354,12 +377,55 @@ def rerun_job(db: Session, job_id: str) -> Job:
     raise ValueError("Re-run is only supported for arXiv jobs")
 
 
+def _stop_batch_job(db: Session, job: Job) -> Job:
+    child_jobs = list_child_jobs(db, job.id)
+    batch_state = _batch_state_for_job(job, _child_summary_for_batch(job, child_jobs))
+    if batch_state not in {"queued", "running", "stopping"}:
+        raise RuntimeError("Only active jobs can be stopped")
+
+    request_job_stop(job)
+    if job.status == JobStatus.pending:
+        mark_job_cancelled(job, clear_lock=True)
+
+    for child in child_jobs:
+        if child.status == JobStatus.pending:
+            mark_job_cancelled(child, clear_lock=True)
+        elif child.status == JobStatus.running:
+            request_job_stop(child)
+
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def stop_job(db: Session, job_id: str) -> Job:
+    job = db.get(Job, job_id)
+    if job is None:
+        raise LookupError("Job not found")
+
+    if _is_batch_root_job(job):
+        return _stop_batch_job(db, job)
+
+    if job.status == JobStatus.pending:
+        mark_job_cancelled(job, clear_lock=True)
+        db.commit()
+        db.refresh(job)
+        return job
+    if job.status == JobStatus.running:
+        request_job_stop(job)
+        db.commit()
+        db.refresh(job)
+        return job
+    raise RuntimeError("Only active jobs can be stopped")
+
+
 async def run_sync_arxiv_batch(
     db: Session,
     scope_json: dict[str, Any],
     *,
     parent_job_id: str,
     progress: Callable[[dict[str, object]], None] | None = None,
+    stop_check: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     child_scopes = expand_arxiv_child_scope_jsons(scope_json)
     stats = {
@@ -371,6 +437,8 @@ async def run_sync_arxiv_batch(
         progress(dict(stats))
 
     for child_scope_json in child_scopes:
+        if stop_check is not None:
+            stop_check()
         child_scope = build_scope_payload(child_scope_json)
         child, created = _create_job_record(
             db,
@@ -399,7 +467,7 @@ def claim_next_job(db: Session, worker_name: str) -> Job | None:
                 and_(Job.status == JobStatus.running, Job.locked_at.is_not(None), Job.locked_at < stale_before),
             )
         )
-        .order_by(Job.created_at.asc())
+        .order_by(*job_execution_order_by())
     )
     if db.bind.dialect.name == "postgresql":
         stmt = stmt.with_for_update(skip_locked=True)
@@ -409,8 +477,13 @@ def claim_next_job(db: Session, worker_name: str) -> Job | None:
     job = db.scalar(stmt)
     if job is None:
         return None
+    if job.status == JobStatus.running and job.stop_requested_at is not None:
+        mark_job_cancelled(job)
+        db.commit()
+        return None
     job.status = JobStatus.running
-    job.started_at = utc_now()
+    if job.started_at is None:
+        job.started_at = utc_now()
     job.finished_at = None
     job.error_text = None
     job.locked_by = worker_name
@@ -432,22 +505,34 @@ async def process_job(job_id: str) -> None:
             job.locked_at = utc_now()
             db.commit()
 
+        def stop_check() -> None:
+            raise_if_job_stop_requested(db, job_id)
+
         try:
+            stop_check()
             if job.job_type == JobType.sync_arxiv:
-                job.stats_json = await run_sync_arxiv(db, job.scope_json, progress=persist_progress)
+                job.stats_json = await run_sync_arxiv(db, job.scope_json, progress=persist_progress, stop_check=stop_check)
             elif job.job_type == JobType.sync_arxiv_batch:
-                job.stats_json = await run_sync_arxiv_batch(db, job.scope_json, parent_job_id=job.id, progress=persist_progress)
+                job.stats_json = await run_sync_arxiv_batch(
+                    db,
+                    job.scope_json,
+                    parent_job_id=job.id,
+                    progress=persist_progress,
+                    stop_check=stop_check,
+                )
             elif job.job_type == JobType.sync_links:
-                job.stats_json = await run_sync_links(db, job.scope_json, progress=persist_progress)
+                job.stats_json = await run_sync_links(db, job.scope_json, progress=persist_progress, stop_check=stop_check)
             elif job.job_type == JobType.enrich:
-                job.stats_json = await run_enrich(db, job.scope_json, progress=persist_progress)
+                job.stats_json = await run_enrich(db, job.scope_json, progress=persist_progress, stop_check=stop_check)
             elif job.job_type == JobType.export:
-                job.stats_json = run_export(db, job.scope_json)
+                job.stats_json = run_export(db, job.scope_json, stop_check=stop_check)
             else:
                 raise RuntimeError(f"Unsupported job type: {job.job_type}")
             job.status = JobStatus.succeeded
             job.finished_at = utc_now()
             job.locked_at = job.finished_at
+        except JobStopRequested:
+            mark_job_cancelled(job)
         except Exception as exc:
             job.status = JobStatus.failed
             job.finished_at = utc_now()

@@ -141,8 +141,10 @@ class ChildSummary(BaseModel):
     total: int
     pending: int
     running: int
+    stopping: int
     succeeded: int
     failed: int
+    cancelled: int
 
 
 class JobRead(BaseModel):
@@ -154,18 +156,29 @@ class JobRead(BaseModel):
     dedupe_key: str
     stats_json: dict[str, Any]
     error_text: str | None
+    stop_requested_at: datetime | None
+    stop_reason: str | None
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
     attempts: int
     locked_by: str | None
     locked_at: datetime | None
-    batch_state: Literal["queued", "running", "succeeded", "failed"] | None = None
+    batch_state: Literal["queued", "running", "stopping", "succeeded", "failed", "cancelled"] | None = None
     child_summary: ChildSummary | None = None
     attempt_count: int = 1
     attempt_rank: int = 1
 
     model_config = {"from_attributes": True}
+
+
+class JobQueueSummaryRead(BaseModel):
+    state: Literal["idle", "waiting", "active"]
+    running: int
+    pending: int
+    stopping: int
+    current_job: JobRead | None = None
+    next_job: JobRead | None = None
 
 
 class DashboardStats(BaseModel):
@@ -178,6 +191,8 @@ class DashboardStats(BaseModel):
     exports: int
     pending_jobs: int
     running_jobs: int
+    stopping_jobs: int
+    job_queue_summary: JobQueueSummaryRead
     recent_jobs: list[JobRead]
 
 

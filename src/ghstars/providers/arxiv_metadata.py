@@ -53,10 +53,15 @@ class ArxivMetadataClient:
 
     async def fetch_id_list_feed(self, arxiv_ids: list[str]) -> tuple[int | None, str | None, dict[str, str], str | None]:
         id_list = ",".join(item.strip() for item in arxiv_ids if item and item.strip())
+        max_results = len([item for item in arxiv_ids if item and item.strip()])
         return await request_text(
             self.session,
             "https://export.arxiv.org/api/query",
-            params={"id_list": id_list},
+            params={
+                "id_list": id_list,
+                # arXiv defaults id_list queries to max_results=10 unless explicitly overridden.
+                "max_results": str(max_results),
+            },
             semaphore=self.semaphore,
             rate_limiter=self.rate_limiter,
             retry_prefix="arXiv metadata id_list query",

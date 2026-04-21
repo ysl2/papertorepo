@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from src.ghstarsv2.config import get_settings
 from src.ghstarsv2.db import get_db
+from src.ghstarsv2.job_order import job_display_order_by
 from src.ghstarsv2.jobs import (
     create_job,
     create_sync_arxiv_job,
@@ -19,13 +20,24 @@ from src.ghstarsv2.jobs import (
     list_job_attempts_read,
     list_jobs_read,
     rerun_job,
+    stop_job,
     serialize_job,
     serialize_jobs,
 )
 from src.ghstarsv2.models import ExportRecord, GitHubRepo, Job, JobType, Paper, RepoStableStatus
-from src.ghstarsv2.schemas import DashboardStats, ExportRead, HealthRead, JobRead, PaperRead, PaperSummaryRead, RepoRead, ScopePayload
+from src.ghstarsv2.schemas import (
+    DashboardStats,
+    ExportRead,
+    HealthRead,
+    JobQueueSummaryRead,
+    JobRead,
+    PaperRead,
+    PaperSummaryRead,
+    RepoRead,
+    ScopePayload,
+)
 from src.ghstarsv2.scope import build_scope_json
-from src.ghstarsv2.services import get_dashboard_stats, scoped_papers, scoped_repos
+from src.ghstarsv2.services import get_dashboard_stats, get_job_queue_snapshot, scoped_papers, scoped_repos
 
 
 def _scope_from_query(
@@ -185,8 +197,25 @@ def register_routes(app: FastAPI) -> None:
             to_date=to_date,
         )
         stats = get_dashboard_stats(db, scope)
-        recent_jobs = list(db.scalars(select(Job).order_by(Job.created_at.desc()).limit(12)))
-        return DashboardStats(**stats, recent_jobs=serialize_jobs(db, recent_jobs))
+        queue_snapshot = get_job_queue_snapshot(db)
+        queue_job_ids = [job_id for job_id in [queue_snapshot.get("current_job_id"), queue_snapshot.get("next_job_id")] if job_id]
+        queue_jobs_by_id: dict[str, JobRead] = {}
+        if queue_job_ids:
+            queue_jobs = list(db.scalars(select(Job).where(Job.id.in_(queue_job_ids))).all())
+            queue_jobs_by_id = {job.id: serialize_job(db, job) for job in queue_jobs}
+        recent_jobs = list(db.scalars(select(Job).order_by(*job_display_order_by()).limit(12)))
+        return DashboardStats(
+            **stats,
+            job_queue_summary=JobQueueSummaryRead(
+                state=str(queue_snapshot["state"]),
+                running=stats["running_jobs"],
+                pending=stats["pending_jobs"],
+                stopping=stats["stopping_jobs"],
+                current_job=queue_jobs_by_id.get(str(queue_snapshot["current_job_id"])) if queue_snapshot["current_job_id"] else None,
+                next_job=queue_jobs_by_id.get(str(queue_snapshot["next_job_id"])) if queue_snapshot["next_job_id"] else None,
+            ),
+            recent_jobs=serialize_jobs(db, recent_jobs),
+        )
 
     @router.get("/papers", response_model=list[PaperSummaryRead])
     def public_papers(
@@ -317,5 +346,14 @@ def register_routes(app: FastAPI) -> None:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+
+    @router.post("/jobs/{job_id}/stop", response_model=JobRead)
+    def stop_existing_job(job_id: str, db: Session = Depends(get_db)) -> JobRead:
+        try:
+            return serialize_job(db, stop_job(db, job_id))
+        except LookupError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
     app.include_router(router)
