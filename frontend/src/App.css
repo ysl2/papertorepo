@@ -2287,6 +2287,7 @@ summary:focus {
   background: white;
   box-shadow: 0 24px 60px rgba(20, 27, 24, 0.2);
   overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .drawer-content {
