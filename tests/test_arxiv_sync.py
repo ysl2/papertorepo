@@ -5,8 +5,12 @@ from datetime import date, datetime, timedelta, timezone
 import pytest
 
 from papertorepo.db.session import session_scope
-from papertorepo.db.models import ArxivArchiveAppearance, ArxivSyncWindow, GitHubRepo, Paper, PaperRepoState, RawFetch, RepoStableStatus, utc_now
+from papertorepo.db.models import ArxivArchiveAppearance, ArxivSyncDay, GitHubRepo, Paper, PaperRepoState, RawFetch, RepoStableStatus, utc_now
 from papertorepo.services.pipeline import backfill_arxiv_archive_appearances, get_dashboard_stats, run_sync_arxiv, scoped_repos
+
+
+def at_utc_midnight(value: date) -> datetime:
+    return datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
 
 
 def _listing_html(arxiv_ids: list[str]) -> str:
@@ -51,8 +55,8 @@ def _insert_scoped_paper(
                 abs_url=f"https://arxiv.org/abs/{arxiv_id}",
                 title=f"Paper {arxiv_id}",
                 abstract="Example abstract",
-                published_at=published_at,
-                updated_at=published_at,
+                published_at=at_utc_midnight(published_at),
+                updated_at=at_utc_midnight(published_at),
                 authors_json=["Alice"],
                 categories_json=categories or [primary_category],
                 comment=None,
@@ -74,13 +78,12 @@ def _insert_archive_appearance(*, arxiv_id: str, category: str, archive_month: d
         )
 
 
-def _insert_arxiv_sync_window(*, category: str, start_date: date, end_date: date, last_completed_at: datetime) -> None:
+def _insert_arxiv_sync_day(*, category: str, sync_day: date, last_completed_at: datetime) -> None:
     with session_scope() as db:
         db.add(
-            ArxivSyncWindow(
+            ArxivSyncDay(
                 category=category,
-                start_date=start_date,
-                end_date=end_date,
+                sync_day=sync_day,
                 last_completed_at=last_completed_at,
             )
         )
@@ -157,14 +160,10 @@ async def test_run_sync_arxiv_window_uses_listing_pages_and_keeps_archive_result
 
 
 @pytest.mark.anyio
-async def test_run_sync_arxiv_skips_closed_window_within_ttl(db_env, monkeypatch):
+async def test_run_sync_arxiv_skips_range_month_when_requested_days_are_fresh(db_env, monkeypatch):
     now = datetime(2026, 4, 20, 12, 0, tzinfo=timezone.utc)
-    _insert_arxiv_sync_window(
-        category="cs.CV",
-        start_date=date(2025, 3, 1),
-        end_date=date(2025, 3, 31),
-        last_completed_at=now - timedelta(days=10),
-    )
+    for sync_day in [date(2025, 3, day) for day in range(15, 32)]:
+        _insert_arxiv_sync_day(category="cs.CV", sync_day=sync_day, last_completed_at=now - timedelta(days=10))
 
     class FailClient:
         def __init__(self, *_args, **_kwargs):
@@ -188,7 +187,7 @@ async def test_run_sync_arxiv_skips_closed_window_within_ttl(db_env, monkeypatch
             db,
             {
                 "categories": ["cs.CV"],
-                "from": "2025-03-01",
+                "from": "2025-03-15",
                 "to": "2025-03-31",
                 "force": False,
             },
@@ -201,14 +200,10 @@ async def test_run_sync_arxiv_skips_closed_window_within_ttl(db_env, monkeypatch
 
 
 @pytest.mark.anyio
-async def test_run_sync_arxiv_force_bypasses_closed_window_ttl(db_env, monkeypatch):
+async def test_run_sync_arxiv_force_bypasses_daily_ttl(db_env, monkeypatch):
     now = datetime(2026, 4, 20, 12, 0, tzinfo=timezone.utc)
-    _insert_arxiv_sync_window(
-        category="cs.CV",
-        start_date=date(2025, 3, 1),
-        end_date=date(2025, 3, 31),
-        last_completed_at=now - timedelta(days=10),
-    )
+    for sync_day in [date(2025, 3, day) for day in range(1, 32)]:
+        _insert_arxiv_sync_day(category="cs.CV", sync_day=sync_day, last_completed_at=now - timedelta(days=10))
     clients: list[object] = []
 
     class FakeClient:
@@ -284,50 +279,37 @@ async def test_run_sync_arxiv_records_closed_window_completion(db_env, monkeypat
     assert stats["listing_pages_fetched"] == 1
 
     with session_scope() as db:
-        window = db.get(
-            ArxivSyncWindow,
-            {
-                "category": "cs.CV",
-                "start_date": date(2025, 3, 1),
-                "end_date": date(2025, 3, 31),
-            },
-        )
+        rows = db.query(ArxivSyncDay).filter(ArxivSyncDay.category == "cs.CV").order_by(ArxivSyncDay.sync_day.asc()).all()
 
-    assert window is not None
-    assert window.last_completed_at is not None
-    completed_at = window.last_completed_at
-    if completed_at.tzinfo is None:
-        completed_at = completed_at.replace(tzinfo=timezone.utc)
-    assert completed_at == now
+    assert [row.sync_day for row in rows] == [date(2025, 3, day) for day in range(1, 32)]
+    for row in rows:
+        assert row.last_completed_at is not None
+        completed_at = row.last_completed_at
+        if completed_at.tzinfo is None:
+            completed_at = completed_at.replace(tzinfo=timezone.utc)
+        assert completed_at == now
 
 
 @pytest.mark.anyio
-async def test_run_sync_arxiv_does_not_apply_ttl_to_current_window(db_env, monkeypatch):
+async def test_run_sync_arxiv_range_checks_only_requested_days_within_month(db_env, monkeypatch):
     now = datetime(2026, 4, 20, 12, 0, tzinfo=timezone.utc)
-    _insert_arxiv_sync_window(
-        category="cs.CV",
-        start_date=date(2026, 4, 1),
-        end_date=date(2026, 4, 20),
-        last_completed_at=now,
-    )
-    clients: list[object] = []
+    for sync_day in [date(2026, 4, day) for day in range(1, 11)]:
+        _insert_arxiv_sync_day(category="cs.CV", sync_day=sync_day, last_completed_at=now)
 
-    class FakeClient:
+    class FailClient:
         def __init__(self, *_args, **_kwargs):
-            self.list_calls: list[tuple[str, str, int, int]] = []
-            clients.append(self)
+            pass
 
-        async def fetch_listing_page(self, *, category, period, skip=0, show=2000):
-            self.list_calls.append((category, period, skip, show))
-            return 200, _listing_html([]), {"Content-Type": "text/html"}, None
+        async def fetch_listing_page(self, **_kwargs):
+            raise AssertionError("fresh requested days should skip arXiv listing fetches")
 
         async def fetch_id_list_feed(self, _arxiv_ids):
-            raise AssertionError("empty listing should not trigger metadata batch fetches")
+            raise AssertionError("fresh requested days should skip metadata fetches")
 
         async def fetch_category_page(self, **_kwargs):
-            raise AssertionError("window sync should not use category-page fetching")
+            raise AssertionError("range sync should not use category-page fetching")
 
-    monkeypatch.setattr("papertorepo.services.pipeline.ArxivMetadataClient", FakeClient)
+    monkeypatch.setattr("papertorepo.services.pipeline.ArxivMetadataClient", FailClient)
     monkeypatch.setattr("papertorepo.services.pipeline._now_utc", lambda: now)
     monkeypatch.setattr("papertorepo.services.pipeline._today_utc", lambda: now.date())
 
@@ -337,15 +319,90 @@ async def test_run_sync_arxiv_does_not_apply_ttl_to_current_window(db_env, monke
             {
                 "categories": ["cs.CV"],
                 "from": "2026-04-01",
-                "to": "2026-04-20",
+                "to": "2026-04-10",
                 "force": False,
             },
         )
 
-    assert stats["windows_skipped_ttl"] == 0
-    assert stats["listing_pages_fetched"] == 1
-    assert len(clients) == 1
-    assert clients[0].list_calls == [("cs.CV", "2026-04", 0, 2000)]
+    assert stats["windows_skipped_ttl"] == 1
+    assert stats["listing_pages_fetched"] == 0
+
+
+@pytest.mark.anyio
+async def test_run_sync_arxiv_recent_day_uses_catchup(db_env, monkeypatch):
+    now = datetime(2026, 4, 22, 12, 0, tzinfo=timezone.utc)
+    calls: list[tuple[str, str]] = []
+
+    class FakeClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def fetch_catchup_page(self, *, category, day):
+            calls.append(("catchup", day.isoformat()))
+            return 200, _listing_html(["2604.00001"]), {"Content-Type": "text/html"}, None
+
+        async def fetch_id_list_feed(self, arxiv_ids):
+            assert arxiv_ids == ["2604.00001"]
+            return 200, _feed_xml([("2604.00001", "2026-04-20", "Recent day")]), {"Content-Type": "application/atom+xml"}, None
+
+        async def fetch_listing_page(self, **_kwargs):
+            raise AssertionError("recent day should not use month listing")
+
+        async def fetch_submitted_day_page(self, **_kwargs):
+            raise AssertionError("recent day should not use submittedDate fallback")
+
+        async def fetch_category_page(self, **_kwargs):
+            raise AssertionError("day sync should not use category-page fetching")
+
+    monkeypatch.setattr("papertorepo.services.pipeline.ArxivMetadataClient", FakeClient)
+    monkeypatch.setattr("papertorepo.services.pipeline._now_utc", lambda: now)
+    monkeypatch.setattr("papertorepo.services.pipeline._today_utc", lambda: now.date())
+
+    with session_scope() as db:
+        stats = await run_sync_arxiv(db, {"categories": ["cs.CV"], "day": "2026-04-20"})
+
+    assert stats["catchup_pages_fetched"] == 1
+    assert stats["search_pages_fetched"] == 0
+    assert calls == [("catchup", "2026-04-20")]
+
+
+@pytest.mark.anyio
+async def test_run_sync_arxiv_historical_day_uses_submitted_date_fallback(db_env, monkeypatch):
+    now = datetime(2026, 4, 22, 12, 0, tzinfo=timezone.utc)
+    calls: list[tuple[str, str]] = []
+
+    class FakeClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def fetch_submitted_day_page(self, *, category, day, start=0, max_results=2000):
+            calls.append(("submitted", day.isoformat()))
+            assert start == 0
+            return 200, _feed_xml([("2501.00001", "2025-01-10", "Historical day")]), {"Content-Type": "application/atom+xml"}, None
+
+        async def fetch_id_list_feed(self, arxiv_ids):
+            assert arxiv_ids == ["2501.00001"]
+            return 200, _feed_xml([("2501.00001", "2025-01-10", "Historical day")]), {"Content-Type": "application/atom+xml"}, None
+
+        async def fetch_catchup_page(self, **_kwargs):
+            raise AssertionError("historical day should not use catchup")
+
+        async def fetch_listing_page(self, **_kwargs):
+            raise AssertionError("historical day should not use month listing")
+
+        async def fetch_category_page(self, **_kwargs):
+            raise AssertionError("day sync should not use category-page fetching")
+
+    monkeypatch.setattr("papertorepo.services.pipeline.ArxivMetadataClient", FakeClient)
+    monkeypatch.setattr("papertorepo.services.pipeline._now_utc", lambda: now)
+    monkeypatch.setattr("papertorepo.services.pipeline._today_utc", lambda: now.date())
+
+    with session_scope() as db:
+        stats = await run_sync_arxiv(db, {"categories": ["cs.CV"], "day": "2025-01-10"})
+
+    assert stats["search_pages_fetched"] == 1
+    assert stats["catchup_pages_fetched"] == 0
+    assert calls == [("submitted", "2025-01-10")]
 
 
 def test_dashboard_stats_and_scoped_repos_track_enriched_scope(db_env):

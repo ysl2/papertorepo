@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import csv
-from datetime import date
+from datetime import date, datetime, timezone
 
 import pytest
 
 from papertorepo.services.debug_arxiv_listing import BASELINE_FIELDNAMES, compare_listing_baseline_against_db, generate_listing_baseline
 from papertorepo.db.session import session_scope
 from papertorepo.db.models import ArxivArchiveAppearance, Paper, utc_now
+
+
+def at_utc_midnight(value: date) -> datetime:
+    return datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
 
 
 def _listing_html(arxiv_ids: list[str]) -> str:
@@ -88,8 +92,8 @@ def test_compare_listing_baseline_against_db_reports_missing_and_extra(db_env, t
                     abs_url="https://arxiv.org/abs/2503.00001",
                     title="Paper 1",
                     abstract="Example",
-                    published_at=date(2025, 3, 1),
-                    updated_at=date(2025, 3, 1),
+                    published_at=at_utc_midnight(date(2025, 3, 1)),
+                    updated_at=at_utc_midnight(date(2025, 3, 1)),
                     authors_json=["Alice"],
                     categories_json=["cs.CV"],
                     comment=None,
@@ -102,8 +106,8 @@ def test_compare_listing_baseline_against_db_reports_missing_and_extra(db_env, t
                     abs_url="https://arxiv.org/abs/2503.00002",
                     title="Paper 2",
                     abstract="Example",
-                    published_at=date(2025, 3, 2),
-                    updated_at=date(2025, 3, 2),
+                    published_at=at_utc_midnight(date(2025, 3, 2)),
+                    updated_at=at_utc_midnight(date(2025, 3, 2)),
                     authors_json=["Bob"],
                     categories_json=["cs.CV"],
                     comment=None,
@@ -123,8 +127,8 @@ def test_compare_listing_baseline_against_db_reports_missing_and_extra(db_env, t
                 abs_url="https://arxiv.org/abs/2503.99999",
                 title="Paper extra",
                 abstract="Example",
-                published_at=date(2025, 3, 3),
-                updated_at=date(2025, 3, 3),
+                published_at=at_utc_midnight(date(2025, 3, 3)),
+                updated_at=at_utc_midnight(date(2025, 3, 3)),
                 authors_json=["Carol"],
                 categories_json=["cs.CV"],
                 comment=None,

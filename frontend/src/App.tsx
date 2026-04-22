@@ -122,6 +122,7 @@ type PaperSummary = {
   authors_json: string[]
   categories_json: string[]
   primary_category: string | null
+  comment: string | null
   link_status: LinkStatus
   primary_repo_url: string | null
   stable_decided_at: string | null
@@ -133,7 +134,8 @@ type PaperSummary = {
 
 type PaperDetail = PaperSummary & {
   abstract: string
-  comment: string | null
+  doi: string | null
+  journal_ref: string | null
   repo_urls: string[]
 }
 
@@ -2158,6 +2160,8 @@ function App() {
           categories: paper.categories_json,
           categories_label: paper.categories_json.join(', ') || paper.primary_category || '',
           published_at: paper.published_at || '',
+          updated_at: paper.updated_at || '',
+          comment: paper.comment || '',
           repo_label: paper.primary_repo_url ? repoLabel(paper.primary_repo_url) : '',
           repo_url: paper.primary_repo_url || '',
           repo_stars: repo?.stars ?? null,
@@ -2168,6 +2172,7 @@ function App() {
             paper.authors_json.join(' '),
             paper.categories_json.join(' '),
             paper.primary_category || '',
+            paper.comment || '',
             paper.primary_repo_url || '',
           ]
             .join(' ')
@@ -2354,6 +2359,14 @@ function App() {
         filterParams: compactDateFilterParams,
         valueFormatter: (params) => formatDate(String(params.value || '')),
       },
+      {
+        field: 'updated_at',
+        headerName: 'Updated',
+        width: columnWidth('Updated', 132),
+        filter: compactDateColumnFilter,
+        filterParams: compactDateFilterParams,
+        valueFormatter: (params) => formatDate(String(params.value || '')),
+      },
       { field: 'repo_label', headerName: 'Repo', width: columnWidth('Repo', 220), cellClass: 'mono-cell' },
       {
         field: 'repo_stars',
@@ -2371,6 +2384,7 @@ function App() {
         filterParams: compactDateFilterParams,
         valueFormatter: (params) => formatTime(String(params.value || '')),
       },
+      { field: 'comment', headerName: 'Comment', width: columnWidth('Comment', 280), hide: true },
       { field: 'authors', headerName: 'Authors', width: columnWidth('Authors', 320), hide: true },
       { field: 'repo_url', headerName: 'Repo URL', width: columnWidth('Repo URL', 320), hide: true, cellClass: 'mono-cell' },
       {
@@ -2863,6 +2877,7 @@ function App() {
           />
           <DetailBlock label="Authors" value={joinList(selectedPaper.authors_json, 8)} />
           <DetailBlock label="Categories" value={joinList(selectedPaper.categories_json, 8)} />
+          <DetailBlock label="Updated" value={formatTime(selectedPaper.updated_at)} />
           <DetailBlock
             label="ArXiv"
             value={
@@ -2876,6 +2891,8 @@ function App() {
           <DetailBlock label="Attempt result" value={selectedPaper.last_attempt_complete ? 'complete' : 'incomplete'} />
           <DetailBlock label="Attempt error" value={selectedPaper.last_attempt_error || '—'} />
           {selectedPaperDetail?.comment ? <DetailBlock label="Comment" value={selectedPaperDetail.comment} /> : null}
+          {selectedPaperDetail?.journal_ref ? <DetailBlock label="Journal Ref" value={selectedPaperDetail.journal_ref} /> : null}
+          {selectedPaperDetail?.doi ? <DetailBlock label="DOI" value={selectedPaperDetail.doi} /> : null}
           <DetailBlock
             label="Repository"
             value={

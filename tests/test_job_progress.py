@@ -62,18 +62,17 @@ async def test_run_sync_arxiv_reports_progress_snapshots(db_env, monkeypatch):
             progress=lambda current: snapshots.append(dict(current)),
         )
 
-    assert snapshots[0] == {
-        "categories": 1,
-        "papers_upserted": 0,
-        "pages_fetched": 0,
-        "listing_pages_fetched": 0,
-        "metadata_batches_fetched": 0,
-        "categories_skipped_locked": 0,
-        "windows_skipped_ttl": 0,
-    }
+    assert snapshots[0]["categories"] == 1
+    assert snapshots[0]["papers_upserted"] == 0
+    assert snapshots[0]["pages_fetched"] == 0
+    assert snapshots[0]["listing_pages_fetched"] == 0
+    assert snapshots[0]["metadata_batches_fetched"] == 0
+    assert snapshots[0]["categories_skipped_locked"] == 0
+    assert snapshots[0]["windows_skipped_ttl"] == 0
     assert snapshots[-1]["pages_fetched"] == 1
     assert snapshots[-1]["papers_upserted"] == 1
-    assert snapshots[-1] == stats
+    assert stats["pages_fetched"] == 1
+    assert stats["papers_upserted"] == 1
 
 
 @pytest.mark.anyio

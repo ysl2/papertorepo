@@ -209,11 +209,12 @@ class PaperSummaryRead(BaseModel):
     arxiv_id: str
     abs_url: str
     title: str
-    published_at: date | None
-    updated_at: date | None
+    published_at: datetime | None
+    updated_at: datetime | None
     authors_json: list[str]
     categories_json: list[str]
     primary_category: str | None
+    comment: str | None
     link_status: RepoStableStatus
     primary_repo_url: str | None
     stable_decided_at: datetime | None
@@ -225,7 +226,8 @@ class PaperSummaryRead(BaseModel):
 
 class PaperRead(PaperSummaryRead):
     abstract: str
-    comment: str | None
+    doi: str | None
+    journal_ref: str | None
     repo_urls: list[str]
 
 

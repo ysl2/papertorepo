@@ -13,7 +13,7 @@ ARXIV_ABS_GITHUB_PATTERN = re.compile(r'https?://(?:www\.)?github\.com/[^\s\"<>]
 
 
 class ArxivLinksClient:
-    def __init__(self, session: aiohttp.ClientSession, *, min_interval: float = 0.5, max_concurrent: int = 2):
+    def __init__(self, session: aiohttp.ClientSession, *, min_interval: float = 0.2, max_concurrent: int = 2):
         self.session = session
         self.semaphore = asyncio.Semaphore(max_concurrent)
         self.rate_limiter = RateLimiter(min_interval)

@@ -74,6 +74,7 @@ def _paper_summary_payload(paper: Paper) -> dict[str, object]:
         "authors_json": paper.authors_json or [],
         "categories_json": paper.categories_json or [],
         "primary_category": paper.primary_category,
+        "comment": paper.comment,
         "link_status": state.stable_status if state is not None else RepoStableStatus.unknown,
         "primary_repo_url": state.primary_repo_url if state is not None else None,
         "stable_decided_at": state.stable_decided_at if state is not None else None,
@@ -93,7 +94,8 @@ def serialize_paper(paper: Paper) -> PaperRead:
     return PaperRead(
         **_paper_summary_payload(paper),
         abstract=paper.abstract,
-        comment=paper.comment,
+        doi=paper.doi,
+        journal_ref=paper.journal_ref,
         repo_urls=state.repo_urls_json if state is not None else [],
     )
 

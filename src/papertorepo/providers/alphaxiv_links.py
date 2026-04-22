@@ -20,7 +20,7 @@ class AlphaXivLinksClient:
         session: aiohttp.ClientSession,
         *,
         alphaxiv_token: str = "",
-        min_interval: float = 0.5,
+        min_interval: float = 0.2,
         max_concurrent: int = 2,
     ):
         self.session = session

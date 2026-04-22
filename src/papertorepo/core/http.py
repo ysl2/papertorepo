@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -11,6 +12,9 @@ import aiohttp
 HTTP_TOTAL_TIMEOUT = 20
 HTTP_CONNECT_TIMEOUT = 10
 MAX_RETRIES = 2
+RETRY_BASE_DELAY_SECONDS = 0.2
+RETRY_MAX_DELAY_SECONDS = 3.0
+RETRY_JITTER_RATIO = 0.1
 
 
 class RateLimiter:
@@ -36,12 +40,19 @@ def build_timeout() -> aiohttp.ClientTimeout:
 
 
 def _retry_delay_seconds(attempt: int, response_headers: Mapping[str, str] | None = None) -> float:
-    base_delay = 0.5 * (2**attempt)
+    base_delay = min(RETRY_MAX_DELAY_SECONDS, RETRY_BASE_DELAY_SECONDS * (2**attempt))
+
+    def _with_jitter(delay: float) -> float:
+        if delay <= 0:
+            return 0.0
+        jitter = delay * RETRY_JITTER_RATIO
+        return max(0.0, delay + random.uniform(-jitter, jitter))
+
     if not response_headers:
-        return base_delay
+        return _with_jitter(base_delay)
     retry_after = (response_headers.get("Retry-After") or "").strip()
     if not retry_after:
-        return base_delay
+        return _with_jitter(base_delay)
     try:
         return max(base_delay, float(retry_after))
     except ValueError:
@@ -49,7 +60,7 @@ def _retry_delay_seconds(attempt: int, response_headers: Mapping[str, str] | Non
     try:
         retry_at = parsedate_to_datetime(retry_after)
     except (TypeError, ValueError, IndexError, OverflowError):
-        return base_delay
+        return _with_jitter(base_delay)
     if retry_at.tzinfo is None:
         retry_at = retry_at.replace(tzinfo=timezone.utc)
     return max(base_delay, max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds()))
@@ -59,8 +70,10 @@ async def request_text(
     session: aiohttp.ClientSession,
     url: str,
     *,
+    method: str = "GET",
     headers: Mapping[str, str] | None = None,
     params: Mapping[str, str] | None = None,
+    json_body: object | None = None,
     semaphore: asyncio.Semaphore,
     rate_limiter: RateLimiter,
     retry_prefix: str,
@@ -73,7 +86,7 @@ async def request_text(
         async with semaphore:
             await rate_limiter.acquire()
             try:
-                async with session.get(url, headers=headers, params=params) as response:
+                async with session.request(method, url, headers=headers, params=params, json=json_body) as response:
                     response_headers = dict(response.headers)
                     body = await response.text()
                     if response.status == 200 or response.status in allowed:
@@ -84,12 +97,12 @@ async def request_text(
                     return response.status, body, response_headers, f"{retry_prefix} error ({response.status})"
             except asyncio.TimeoutError:
                 if attempt < retry_limit:
-                    await asyncio.sleep(0.5 * (2**attempt))
+                    await asyncio.sleep(_retry_delay_seconds(attempt))
                     continue
                 return None, None, {}, f"{retry_prefix} timeout"
             except Exception as exc:
                 if attempt < retry_limit:
-                    await asyncio.sleep(0.5 * (2**attempt))
+                    await asyncio.sleep(_retry_delay_seconds(attempt))
                     continue
                 return None, None, {}, f"{retry_prefix} request failed: {exc}"
     return None, None, {}, f"{retry_prefix} error"

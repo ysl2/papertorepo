@@ -13,7 +13,7 @@ from papertorepo.core.normalize.github import extract_github_repo_urls, normaliz
 
 
 HUGGINGFACE_PAPER_ID_PATTERN = re.compile(r"^[0-9]{4}\.[0-9]{4,5}$")
-HUGGINGFACE_SEARCH_MAX_CONCURRENT = 1
+HUGGINGFACE_SEARCH_MAX_CONCURRENT = 2
 
 
 class HuggingFaceLinksClient:
@@ -22,14 +22,15 @@ class HuggingFaceLinksClient:
         session: aiohttp.ClientSession,
         *,
         huggingface_token: str = "",
-        min_interval: float = 0.5,
+        min_interval: float = 0.2,
         max_concurrent: int = 2,
+        html_max_concurrent: int = HUGGINGFACE_SEARCH_MAX_CONCURRENT,
     ):
         self.session = session
         self.huggingface_token = huggingface_token
         self.semaphore = asyncio.Semaphore(max_concurrent)
-        self.search_semaphore = asyncio.Semaphore(HUGGINGFACE_SEARCH_MAX_CONCURRENT)
-        self.rate_limiter = RateLimiter(max(min_interval, 0.5))
+        self.search_semaphore = asyncio.Semaphore(max(1, html_max_concurrent))
+        self.rate_limiter = RateLimiter(max(0.0, min_interval))
 
     async def fetch_paper_payload(self, arxiv_id: str) -> tuple[int | None, str | None, dict[str, str], str | None]:
         return await request_text(

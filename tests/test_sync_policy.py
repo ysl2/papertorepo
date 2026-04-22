@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime
 from datetime import timedelta, timezone
 
 import pytest
+from sqlalchemy import select
 
 from papertorepo.core.config import clear_settings_cache
 from papertorepo.db.session import session_scope
-from papertorepo.db.models import ArxivArchiveAppearance, GitHubRepo, Paper, PaperRepoState, RepoStableStatus, utc_now
+from papertorepo.db.models import ArxivArchiveAppearance, GitHubRepo, Paper, PaperRepoState, RawFetch, RepoStableStatus, utc_now
 from papertorepo.services.pipeline import run_enrich, run_sync_links
 from tests.conftest import insert_paper
+
+
+def at_utc_midnight(value: date) -> datetime:
+    return datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
 
 
 def _insert_paper(arxiv_id: str, published_at: date) -> None:
@@ -21,8 +26,8 @@ def _insert_paper(arxiv_id: str, published_at: date) -> None:
                 abs_url=f"https://arxiv.org/abs/{arxiv_id}",
                 title=f"Paper {arxiv_id}",
                 abstract="Example abstract",
-                published_at=published_at,
-                updated_at=published_at,
+                published_at=at_utc_midnight(published_at),
+                updated_at=at_utc_midnight(published_at),
                 authors_json=["Alice"],
                 categories_json=["cs.CV"],
                 comment=None,
@@ -291,6 +296,8 @@ async def test_sync_links_uses_database_published_at_scope_not_archive_month(db_
 
 @pytest.mark.anyio
 async def test_enrich_uses_database_published_at_scope_not_archive_month(db_env, monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "")
+    clear_settings_cache()
     _insert_paper("2604.00002", date(2026, 4, 18))
     _insert_paper("2605.00002", date(2026, 5, 2))
 
@@ -381,3 +388,189 @@ async def test_enrich_uses_database_published_at_scope_not_archive_month(db_env,
     assert stats["repos_considered"] == 1
     assert stats["updated"] == 1
     assert requested_urls == ["https://api.github.com/repos/foo/april-paper"]
+
+
+@pytest.mark.anyio
+async def test_enrich_uses_github_graphql_batch_with_token(db_env, monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "token-1")
+    clear_settings_cache()
+    insert_paper("2604.10001")
+    insert_paper("2604.10002")
+
+    with session_scope() as db:
+        db.add_all(
+            [
+                PaperRepoState(
+                    arxiv_id="2604.10001",
+                    stable_status=RepoStableStatus.found,
+                    primary_repo_url="https://github.com/foo/bar",
+                    repo_urls_json=["https://github.com/foo/bar"],
+                    stable_decided_at=utc_now(),
+                    refresh_after=utc_now() + timedelta(days=7),
+                    last_attempt_at=utc_now(),
+                    last_attempt_complete=True,
+                ),
+                PaperRepoState(
+                    arxiv_id="2604.10002",
+                    stable_status=RepoStableStatus.found,
+                    primary_repo_url="https://github.com/acme/baz",
+                    repo_urls_json=["https://github.com/acme/baz"],
+                    stable_decided_at=utc_now(),
+                    refresh_after=utc_now() + timedelta(days=7),
+                    last_attempt_at=utc_now(),
+                    last_attempt_complete=True,
+                ),
+            ]
+        )
+
+    calls: list[str] = []
+
+    async def fake_request_text(_session, url, **kwargs):
+        calls.append(url)
+        if url != "https://api.github.com/graphql":
+            raise AssertionError("REST fallback should not run for successful GraphQL batches")
+        assert kwargs.get("method") == "POST"
+        query = ((kwargs.get("json_body") or {}).get("query") or "")
+        assert "repo0:" in query
+        assert "repo1:" in query
+        payload = {
+            "data": {
+                "repo0": {
+                    "databaseId": 22,
+                    "name": "baz",
+                    "owner": {"login": "acme"},
+                    "stargazerCount": 456,
+                    "createdAt": "2021-02-02T00:00:00Z",
+                    "description": "repo baz",
+                    "homepageUrl": None,
+                    "isArchived": False,
+                    "pushedAt": "2026-04-19T00:00:00Z",
+                    "licenseInfo": {"spdxId": "Apache-2.0", "name": "Apache-2.0"},
+                    "repositoryTopics": {"nodes": [{"topic": {"name": "ml"}}, {"topic": {"name": "cv"}}]},
+                },
+                "repo1": {
+                    "databaseId": 11,
+                    "name": "bar",
+                    "owner": {"login": "foo"},
+                    "stargazerCount": 123,
+                    "createdAt": "2020-01-01T00:00:00Z",
+                    "description": "repo bar",
+                    "homepageUrl": "https://bar.example",
+                    "isArchived": False,
+                    "pushedAt": "2026-04-20T00:00:00Z",
+                    "licenseInfo": {"spdxId": "MIT", "name": "MIT"},
+                    "repositoryTopics": {"nodes": [{"topic": {"name": "vision"}}]},
+                },
+            }
+        }
+        return 200, json.dumps(payload), {"Content-Type": "application/json"}, None
+
+    monkeypatch.setattr("papertorepo.services.pipeline.request_text", fake_request_text)
+
+    with session_scope() as db:
+        stats = await run_enrich(db, {"categories": ["cs.CV"]})
+
+    assert stats["updated"] == 2
+    assert stats["repos_completed"] == 2
+    assert stats["provider_counts"]["github"]["graphql_batches"] == 1
+    assert stats["provider_counts"]["github"]["graphql_fallbacks"] == 0
+    assert calls == ["https://api.github.com/graphql"]
+
+    with session_scope() as db:
+        foo_repo = db.get(GitHubRepo, "https://github.com/foo/bar")
+        acme_repo = db.get(GitHubRepo, "https://github.com/acme/baz")
+        raw_fetches = list(
+            db.scalars(
+                select(RawFetch).where(
+                    RawFetch.provider == "github",
+                    RawFetch.surface == "graphql_batch",
+                )
+            ).all()
+        )
+
+    assert foo_repo is not None
+    assert foo_repo.stars == 123
+    assert foo_repo.topics_json == ["vision"]
+    assert acme_repo is not None
+    assert acme_repo.stars == 456
+    assert acme_repo.topics_json == ["ml", "cv"]
+    assert len(raw_fetches) == 1
+
+
+@pytest.mark.anyio
+async def test_enrich_graphql_falls_back_to_rest_for_unresolved_repo(db_env, monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "token-1")
+    clear_settings_cache()
+    insert_paper("2604.10003")
+
+    with session_scope() as db:
+        db.add(
+            PaperRepoState(
+                arxiv_id="2604.10003",
+                stable_status=RepoStableStatus.found,
+                primary_repo_url="https://github.com/foo/fallback",
+                repo_urls_json=["https://github.com/foo/fallback"],
+                stable_decided_at=utc_now(),
+                refresh_after=utc_now() + timedelta(days=7),
+                last_attempt_at=utc_now(),
+                last_attempt_complete=True,
+            )
+        )
+
+    calls: list[str] = []
+
+    async def fake_request_text(_session, url, **kwargs):
+        calls.append(url)
+        if url == "https://api.github.com/graphql":
+            payload = {
+                "data": {"repo0": None},
+                "errors": [{"path": ["repo0"], "message": "not resolved"}],
+            }
+            return 200, json.dumps(payload), {"Content-Type": "application/json"}, None
+        if url == "https://api.github.com/repos/foo/fallback":
+            payload = {
+                "id": 33,
+                "name": "fallback",
+                "owner": {"login": "foo"},
+                "stargazers_count": 77,
+                "created_at": "2020-03-03T00:00:00Z",
+                "description": "rest fallback repo",
+                "homepage": "https://fallback.example",
+                "topics": ["fallback"],
+                "license": {"spdx_id": "BSD-3-Clause"},
+                "archived": False,
+                "pushed_at": "2026-04-18T00:00:00Z",
+            }
+            return 200, json.dumps(payload), {"ETag": "etag-33"}, None
+        raise AssertionError(f"unexpected request: {url}")
+
+    monkeypatch.setattr("papertorepo.services.pipeline.request_text", fake_request_text)
+
+    with session_scope() as db:
+        stats = await run_enrich(db, {"categories": ["cs.CV"]})
+
+    assert stats["updated"] == 1
+    assert stats["repos_completed"] == 1
+    assert stats["provider_counts"]["github"]["graphql_batches"] == 1
+    assert stats["provider_counts"]["github"]["graphql_fallbacks"] == 1
+    assert stats["provider_counts"]["github"]["rest_requests"] == 1
+    assert calls == [
+        "https://api.github.com/graphql",
+        "https://api.github.com/repos/foo/fallback",
+    ]
+
+    with session_scope() as db:
+        repo = db.get(GitHubRepo, "https://github.com/foo/fallback")
+        raw_fetches = list(
+            db.scalars(
+                select(RawFetch).where(
+                    RawFetch.provider == "github",
+                    RawFetch.surface.in_(["graphql_batch", "repo_api"]),
+                )
+            ).all()
+        )
+
+    assert repo is not None
+    assert repo.stars == 77
+    assert repo.topics_json == ["fallback"]
+    assert len(raw_fetches) == 2

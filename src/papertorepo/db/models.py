@@ -85,15 +85,22 @@ class Paper(Base):
     __tablename__ = "papers"
 
     arxiv_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    entry_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     abs_url: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     title: Mapped[str] = mapped_column(Text)
     abstract: Mapped[str] = mapped_column(Text)
-    published_at: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
-    updated_at: Mapped[date | None] = mapped_column(Date, nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     authors_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    author_details_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     categories_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    category_details_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    links_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    journal_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    doi: Mapped[str | None] = mapped_column(String(255), nullable=True)
     primary_category: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    primary_category_scheme: Mapped[str | None] = mapped_column(String(255), nullable=True)
     source_first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     source_last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
@@ -160,6 +167,17 @@ class ArxivSyncWindow(Base):
     category: Mapped[str] = mapped_column(String(64), primary_key=True)
     start_date: Mapped[date] = mapped_column(Date, primary_key=True)
     end_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    last_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ArxivSyncDay(Base):
+    __tablename__ = "arxiv_sync_days"
+    __table_args__ = (
+        Index("ix_arxiv_sync_days_completed", "last_completed_at"),
+    )
+
+    category: Mapped[str] = mapped_column(String(64), primary_key=True)
+    sync_day: Mapped[date] = mapped_column(Date, primary_key=True)
     last_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 

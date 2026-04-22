@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,6 +13,10 @@ from papertorepo.jobs.queue import claim_next_job, create_sync_arxiv_job, proces
 from papertorepo.api.schemas import ScopePayload
 
 
+def at_utc_midnight(value: date) -> datetime:
+    return datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
+
+
 def test_public_papers_returns_summary_rows(db_env):
     with session_scope() as db:
         db.add(
@@ -21,8 +25,8 @@ def test_public_papers_returns_summary_rows(db_env):
                 abs_url="https://arxiv.org/abs/2604.15312",
                 title="Bidirectional Cross-Modal Prompting",
                 abstract="Long abstract body",
-                published_at=date(2026, 4, 16),
-                updated_at=date(2026, 4, 16),
+                published_at=at_utc_midnight(date(2026, 4, 16)),
+                updated_at=at_utc_midnight(date(2026, 4, 16)),
                 authors_json=["Alice", "Bob"],
                 categories_json=["cs.CV"],
                 comment="CVPR 2026",
@@ -57,7 +61,7 @@ def test_public_papers_returns_summary_rows(db_env):
     assert row["primary_repo_url"] == "https://github.com/example/project"
     assert row["link_status"] == "found"
     assert "abstract" not in row
-    assert "comment" not in row
+    assert row["comment"] == "CVPR 2026"
     assert "repo_urls" not in row
 
 
@@ -74,8 +78,8 @@ def test_public_papers_supports_offset_paging(db_env):
                     abs_url=f"https://arxiv.org/abs/{arxiv_id}",
                     title=title,
                     abstract=f"Abstract for {title}",
-                    published_at=published_at,
-                    updated_at=published_at,
+                    published_at=at_utc_midnight(published_at),
+                    updated_at=at_utc_midnight(published_at),
                     authors_json=["Alice"],
                     categories_json=["cs.CV"],
                     comment=None,
@@ -107,11 +111,12 @@ def test_public_paper_detail_returns_full_payload(db_env):
                 abs_url="https://arxiv.org/abs/2604.15311",
                 title="LeapAlign",
                 abstract="Detail abstract",
-                published_at=date(2026, 4, 16),
-                updated_at=date(2026, 4, 16),
+                published_at=at_utc_midnight(date(2026, 4, 16)),
+                updated_at=at_utc_midnight(date(2026, 4, 16)),
                 authors_json=["Carol"],
                 categories_json=["cs.CV"],
                 comment="Accepted by CVPR 2026",
+                doi="10.48550/arXiv.2604.15311",
                 primary_category="cs.CV",
                 source_first_seen_at=utc_now(),
                 source_last_seen_at=utc_now(),
@@ -140,6 +145,7 @@ def test_public_paper_detail_returns_full_payload(db_env):
     assert payload["arxiv_id"] == "2604.15311"
     assert payload["abstract"] == "Detail abstract"
     assert payload["comment"] == "Accepted by CVPR 2026"
+    assert payload["doi"] == "10.48550/arXiv.2604.15311"
     assert payload["repo_urls"] == []
 
     assert not_found_response.status_code == 404

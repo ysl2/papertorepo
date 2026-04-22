@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import csv
-from datetime import date
+from datetime import date, datetime, timezone
 
 from papertorepo.db.session import session_scope
 from papertorepo.db.models import ArxivArchiveAppearance, ExportRecord, Paper, utc_now
 from papertorepo.core.scope import build_scope_json
 from papertorepo.api.schemas import ScopePayload
 from papertorepo.services.pipeline import run_export
+
+
+def at_utc_midnight(value: date) -> datetime:
+    return datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
 
 
 def _insert_paper(arxiv_id: str, published_at: date, primary_category: str) -> None:
@@ -18,8 +22,8 @@ def _insert_paper(arxiv_id: str, published_at: date, primary_category: str) -> N
                 abs_url=f"https://arxiv.org/abs/{arxiv_id}",
                 title=f"Paper {arxiv_id}",
                 abstract="Example abstract",
-                published_at=published_at,
-                updated_at=published_at,
+                published_at=at_utc_midnight(published_at),
+                updated_at=at_utc_midnight(published_at),
                 authors_json=["Alice"],
                 categories_json=[primary_category],
                 comment=None,

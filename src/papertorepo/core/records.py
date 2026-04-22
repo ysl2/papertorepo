@@ -1,21 +1,30 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 
 @dataclass(frozen=True)
 class Paper:
     arxiv_id: str
+    entry_id: str | None
     abs_url: str
     title: str
     abstract: str
-    published_at: str | None
-    updated_at: str | None
+    published_at: datetime | None
+    updated_at: datetime | None
     authors: tuple[str, ...]
+    author_details: tuple[dict[str, Any], ...]
     categories: tuple[str, ...]
+    category_details: tuple[dict[str, Any], ...]
+    links: tuple[dict[str, Any], ...]
     comment: str | None
+    journal_ref: str | None
+    doi: str | None
     primary_category: str | None
+    primary_category_scheme: str | None
 
 
 @dataclass(frozen=True)

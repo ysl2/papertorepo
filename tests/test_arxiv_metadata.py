@@ -13,22 +13,37 @@ def test_parse_papers_from_feed_extracts_core_fields():
         <title> Test Paper </title>
         <summary> Example abstract. </summary>
         <author><name>Alice</name></author>
-        <author><name>Bob</name></author>
-        <category term='cs.CV' />
+        <author>
+          <name>Bob</name>
+          <arxiv:affiliation xmlns:arxiv='http://arxiv.org/schemas/atom'>Example Lab</arxiv:affiliation>
+        </author>
+        <link href='http://arxiv.org/abs/2603.12345v1' rel='alternate' type='text/html' />
+        <link href='http://arxiv.org/pdf/2603.12345v1' rel='related' type='application/pdf' title='pdf' />
+        <category term='cs.CV' scheme='http://arxiv.org/schemas/atom' />
         <category term='cs.LG' />
         <arxiv:comment xmlns:arxiv='http://arxiv.org/schemas/atom'>Code: https://github.com/foo/bar</arxiv:comment>
+        <arxiv:journal_ref xmlns:arxiv='http://arxiv.org/schemas/atom'>CVPR 2026</arxiv:journal_ref>
+        <arxiv:doi xmlns:arxiv='http://arxiv.org/schemas/atom'>10.48550/arXiv.2603.12345</arxiv:doi>
+        <arxiv:primary_category xmlns:arxiv='http://arxiv.org/schemas/atom' term='cs.CV' scheme='http://arxiv.org/schemas/atom' />
       </entry>
     </feed>"""
     papers = parse_papers_from_feed(feed)
     assert len(papers) == 1
     paper = papers[0]
     assert paper.arxiv_id == "2603.12345"
+    assert paper.entry_id == "http://arxiv.org/abs/2603.12345v1"
     assert paper.abs_url == "https://arxiv.org/abs/2603.12345"
     assert paper.title == "Test Paper"
     assert paper.abstract == "Example abstract."
     assert paper.authors == ("Alice", "Bob")
+    assert paper.author_details[1]["affiliations"] == ["Example Lab"]
     assert paper.categories == ("cs.CV", "cs.LG")
     assert paper.primary_category == "cs.CV"
+    assert paper.primary_category_scheme == "http://arxiv.org/schemas/atom"
+    assert paper.comment == "Code: https://github.com/foo/bar"
+    assert paper.journal_ref == "CVPR 2026"
+    assert paper.doi == "10.48550/arXiv.2603.12345"
+    assert paper.links[0]["href"] == "http://arxiv.org/abs/2603.12345v1"
 
 
 @pytest.mark.anyio
