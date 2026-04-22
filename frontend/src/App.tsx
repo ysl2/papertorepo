@@ -571,6 +571,19 @@ function summarizeStats(stats: Record<string, unknown>, emptyLabel = 'no stats y
   return items.map(([key, value]) => `${key}: ${String(value)}`).join(' · ')
 }
 
+function isBatchRootType(jobType: string) {
+  return jobType === 'sync_arxiv_batch' || jobType === 'sync_links_batch' || jobType === 'enrich_batch'
+}
+
+function isReusedChildStats(stats: Record<string, unknown>) {
+  return stats.reused === true && typeof stats.reused_from_job_id === 'string'
+}
+
+function reusedChildSummary(stats: Record<string, unknown>) {
+  if (!isReusedChildStats(stats)) return null
+  return `Reused success · ${shortId(String(stats.reused_from_job_id))}`
+}
+
 function parseJobTime(value: string) {
   const timestamp = Date.parse(value)
   return Number.isNaN(timestamp) ? 0 : timestamp
@@ -625,12 +638,29 @@ function jobTypeLabel(jobType: string) {
       return 'ArXiv range batch'
     case 'sync_links':
       return 'Find repos'
+    case 'sync_links_batch':
+      return 'Repo lookup batch'
     case 'enrich':
       return 'Refresh metadata'
+    case 'enrich_batch':
+      return 'Metadata batch'
     case 'export':
       return 'Export'
     default:
       return jobType
+  }
+}
+
+function batchFolderLabel(jobType: string) {
+  switch (jobType) {
+    case 'sync_arxiv_batch':
+      return 'ArXiv batch folder'
+    case 'sync_links_batch':
+      return 'Repo lookup batch folder'
+    case 'enrich_batch':
+      return 'Metadata batch folder'
+    default:
+      return 'Batch folder'
   }
 }
 
@@ -666,7 +696,9 @@ function childSummaryLabel(summary: ChildSummary | null) {
 function jobSummary(job: Job) {
   const displayStatus = jobDisplayStatus(job)
   if (job.error_text && displayStatus !== 'stopping') return job.error_text
-  if (job.job_type === 'sync_arxiv_batch') {
+  const reusedSummary = reusedChildSummary(job.stats_json)
+  if (reusedSummary) return reusedSummary
+  if (isBatchRootType(job.job_type)) {
     if (job.batch_state === 'queued') return `Queued · ${childSummaryLabel(job.child_summary)}`
     if (job.batch_state === 'stopping') return `Stopping · ${childSummaryLabel(job.child_summary)}`
     if (job.batch_state === 'cancelled') return job.error_text || `Stopped · ${childSummaryLabel(job.child_summary)}`
@@ -689,8 +721,18 @@ function isFinishedDisplayState(value: string) {
   return value === 'succeeded' || value === 'failed' || value === 'cancelled'
 }
 
+function canRerunBatchRoot(job: Job) {
+  if (!job.child_summary) return false
+  return job.child_summary.failed > 0 || job.child_summary.cancelled > 0 || job.child_summary.pending > 0
+}
+
 function canRerunJob(job: Job) {
-  if (job.job_type !== 'sync_arxiv' && job.job_type !== 'sync_arxiv_batch') return false
+  if (isBatchRootType(job.job_type)) {
+    if (!canRerunBatchRoot(job)) return false
+    if (!isFinishedDisplayState(jobDisplayStatus(job))) return false
+    return isLatestAttempt(job)
+  }
+  if (job.job_type !== 'sync_arxiv' && job.job_type !== 'sync_links' && job.job_type !== 'enrich') return false
   if (!isFinishedDisplayState(jobDisplayStatus(job))) return false
   return isLatestAttempt(job)
 }
@@ -698,7 +740,7 @@ function canRerunJob(job: Job) {
 function canStopJob(job: Job) {
   const displayStatus = jobDisplayStatus(job)
   if (job.stop_requested_at) return false
-  if (job.job_type === 'sync_arxiv_batch' && job.parent_job_id === null) {
+  if (isBatchRootType(job.job_type) && job.parent_job_id === null) {
     return displayStatus === 'queued' || displayStatus === 'running'
   }
   return job.status === 'pending' || job.status === 'running'
@@ -719,6 +761,8 @@ function queueJobProgressLabel(job: Job) {
 
   switch (job.job_type) {
     case 'sync_arxiv_batch':
+    case 'sync_links_batch':
+    case 'enrich_batch':
       return childSummaryLabel(job.child_summary)
     case 'sync_arxiv': {
       const papersSaved = numericStat(job.stats_json, 'papers_upserted')
@@ -786,7 +830,7 @@ function queueNextJobLabel(job: Job) {
 }
 
 function isBatchFolderJob(job: Pick<Job, 'job_type' | 'parent_job_id'>) {
-  return job.job_type === 'sync_arxiv_batch' && job.parent_job_id === null
+  return isBatchRootType(job.job_type) && job.parent_job_id === null
 }
 
 function joinList(values: string[], maxItems = 6) {
@@ -2135,7 +2179,7 @@ function App() {
           row_depth: rowDepth,
           history_depth: historyDepth,
           status: jobDisplayStatus(job),
-          job_type: isBatchFolder ? 'ArXiv batch folder' : jobTypeLabel(job.job_type),
+          job_type: isBatchFolder ? batchFolderLabel(job.job_type) : jobTypeLabel(job.job_type),
           scope_label: scopeJsonLabel(job.scope_json),
           attempt_count: job.attempt_count,
           attempt_rank: job.attempt_rank,
@@ -2321,7 +2365,7 @@ function App() {
           suppressMouseEventHandling: suppressInteractiveCellMouseHandling,
           onToggleChildren: (jobId: string) => {
             const job = rootJobById.get(jobId)
-            if (!job || job.job_type !== 'sync_arxiv_batch') return
+            if (!job || !isBatchFolderJob(job)) return
 
             if (expandedParentJobSet.has(jobId)) {
               cancelChildJobsLoad(jobId)
@@ -2593,7 +2637,7 @@ function App() {
     const controller = new AbortController()
 
     async function loadSelectedJobChildren() {
-      if (previewTab !== 'jobs' || !selectedJob || selectedJob.job_type !== 'sync_arxiv_batch') {
+      if (previewTab !== 'jobs' || !selectedJob || !isBatchFolderJob(selectedJob)) {
         selectedJobChildrenHydratedJobIdRef.current = null
         setSelectedJobChildren([])
         setSelectedJobChildrenLoading(false)
@@ -2944,19 +2988,20 @@ function App() {
             label="Stats"
             value={
               <p className="long-text">
-                {summarizeStats(
-                  selectedJob.stats_json,
-                  jobDisplayStatus(selectedJob) === 'stopping'
-                    ? 'Stop requested…'
-                    : selectedJob.status === 'running'
-                      ? 'Starting…'
-                      : 'no stats yet',
-                )}
+                {reusedChildSummary(selectedJob.stats_json) ||
+                  summarizeStats(
+                    selectedJob.stats_json,
+                    jobDisplayStatus(selectedJob) === 'stopping'
+                      ? 'Stop requested…'
+                      : selectedJob.status === 'running'
+                        ? 'Starting…'
+                        : 'no stats yet',
+                  )}
               </p>
             }
           />
           {selectedJob.error_text ? <DetailBlock label="Error" value={<p className="long-text">{selectedJob.error_text}</p>} /> : null}
-          {selectedJob.job_type === 'sync_arxiv_batch' ? (
+          {isBatchFolderJob(selectedJob) ? (
             <DetailBlock
               label="Latest child attempt per scope"
               value={

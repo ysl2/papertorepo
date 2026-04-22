@@ -13,16 +13,18 @@ from sqlalchemy.orm import Session
 
 from src.ghstarsv2.config import get_settings
 from src.ghstarsv2.db import get_engine, session_scope
+from src.ghstarsv2.job_batches import (
+    batch_child_job_type_for_root,
+    batch_root_job_type_for_child,
+    is_batch_root_job,
+    is_batch_root_job_type,
+    planned_child_scope_jsons,
+    should_create_batch_root,
+)
 from src.ghstarsv2.job_order import job_display_order_by, job_display_sort_key, job_execution_order_by
 from src.ghstarsv2.job_stop import JobStopRequested, mark_job_cancelled, raise_if_job_stop_requested, request_job_stop
 from src.ghstarsv2.models import Job, JobStatus, JobType, utc_now
-from src.ghstarsv2.scope import (
-    arxiv_scope_spans_multiple_months,
-    build_scope_json,
-    build_scope_payload,
-    build_dedupe_key,
-    expand_arxiv_child_scope_jsons,
-)
+from src.ghstarsv2.scope import build_scope_json, build_scope_payload, build_dedupe_key
 from src.ghstarsv2.schemas import ChildSummary, JobRead, ScopePayload, validate_scope_for_job
 from src.ghstarsv2.services import (
     backfill_arxiv_archive_appearances,
@@ -35,6 +37,8 @@ from src.ghstarsv2.services import (
 
 
 INIT_DATABASE_LOCK_ID = 649183502117041921
+ACTIVE_JOB_STATUSES = {JobStatus.pending, JobStatus.running}
+REUSED_CHILD_LOCKED_BY = "batch-reuse"
 
 
 @dataclass(frozen=True)
@@ -120,14 +124,25 @@ def create_job(
     return job
 
 
-def create_sync_arxiv_job(db: Session, scope: ScopePayload, *, parent_job_id: str | None = None) -> Job:
-    validate_scope_for_job(scope, JobType.sync_arxiv)
+def create_sync_job(
+    db: Session,
+    job_type: JobType,
+    scope: ScopePayload,
+    *,
+    parent_job_id: str | None = None,
+) -> Job:
+    validate_scope_for_job(scope, job_type)
     scope_json = build_scope_json(scope)
-    job_type = JobType.sync_arxiv
-    if parent_job_id is None and arxiv_scope_spans_multiple_months(scope_json):
-        job_type = JobType.sync_arxiv_batch
-    job, _created = _create_job_record(db, job_type, scope_json, parent_job_id=parent_job_id)
+    target_job_type = job_type
+    batch_root_job_type = batch_root_job_type_for_child(job_type)
+    if batch_root_job_type is not None and parent_job_id is None and should_create_batch_root(job_type, scope_json):
+        target_job_type = batch_root_job_type
+    job, _created = _create_job_record(db, target_job_type, scope_json, parent_job_id=parent_job_id)
     return job
+
+
+def create_sync_arxiv_job(db: Session, scope: ScopePayload, *, parent_job_id: str | None = None) -> Job:
+    return create_sync_job(db, JobType.sync_arxiv, scope, parent_job_id=parent_job_id)
 
 
 def _latest_jobs_by_dedupe(jobs: list[Job]) -> list[Job]:
@@ -137,13 +152,17 @@ def _latest_jobs_by_dedupe(jobs: list[Job]) -> list[Job]:
     return list(latest.values())
 
 
-def _is_batch_root_job(job: Job) -> bool:
-    return job.job_type == JobType.sync_arxiv_batch and job.parent_job_id is None
+def _job_is_batch_root(job: Job) -> bool:
+    return is_batch_root_job(job.job_type, job.parent_job_id)
+
+
+def _planned_batch_child_scopes(job: Job) -> list[dict[str, Any]]:
+    return planned_child_scope_jsons(job.job_type, job.scope_json)
 
 
 def _child_summary_for_batch(job: Job, child_jobs: list[Job]) -> ChildSummary:
     latest_jobs = _latest_jobs_by_dedupe(child_jobs)
-    planned_total = len(expand_arxiv_child_scope_jsons(job.scope_json))
+    planned_total = len(_planned_batch_child_scopes(job))
     latest_total = len(latest_jobs)
     total = max(planned_total, latest_total)
     counts = {
@@ -193,6 +212,96 @@ def _batch_state_for_job(job: Job, child_summary: ChildSummary | None) -> str:
     if child_summary.failed > 0:
         return "failed"
     return "succeeded"
+
+
+def _latest_attempt_for_scope(
+    db: Session,
+    *,
+    job_type: JobType,
+    dedupe_key: str,
+    parent_job_id: str | None,
+) -> Job | None:
+    return db.scalar(
+        select(Job)
+        .where(
+            Job.job_type == job_type,
+            Job.dedupe_key == dedupe_key,
+            _parent_job_clause(parent_job_id),
+        )
+        .order_by(*job_display_order_by())
+    )
+
+
+def _batch_root_attempts(db: Session, batch_job: Job) -> list[Job]:
+    return list(
+        db.scalars(
+            select(Job)
+            .where(
+                Job.job_type == batch_job.job_type,
+                Job.dedupe_key == batch_job.dedupe_key,
+                Job.parent_job_id.is_(None),
+            )
+            .order_by(*job_display_order_by())
+        )
+    )
+
+
+def _latest_batch_root_attempt(db: Session, batch_job: Job) -> Job | None:
+    return next(iter(_batch_root_attempts(db, batch_job)), None)
+
+
+def _latest_batch_lineage_child_attempt(
+    db: Session,
+    *,
+    batch_job: Job,
+    child_job_type: JobType,
+    child_scope_json: dict[str, Any],
+) -> Job | None:
+    lineage_parent_ids = [item.id for item in _batch_root_attempts(db, batch_job)]
+    if not lineage_parent_ids:
+        return None
+    child_dedupe_key = build_dedupe_key(child_job_type.value, child_scope_json)
+    return db.scalar(
+        select(Job)
+        .where(
+            Job.job_type == child_job_type,
+            Job.dedupe_key == child_dedupe_key,
+            Job.parent_job_id.in_(lineage_parent_ids),
+        )
+        .order_by(*job_display_order_by())
+    )
+
+
+def _create_reused_child_record(
+    db: Session,
+    *,
+    child_job_type: JobType,
+    child_scope_json: dict[str, Any],
+    parent_job_id: str,
+    source_job: Job,
+) -> Job:
+    timestamp = utc_now()
+    job = Job(
+        parent_job_id=parent_job_id,
+        job_type=child_job_type,
+        status=JobStatus.succeeded,
+        scope_json=child_scope_json,
+        dedupe_key=build_dedupe_key(child_job_type.value, child_scope_json),
+        stats_json={
+            "reused": True,
+            "reused_from_job_id": source_job.id,
+            "reused_from_parent_job_id": source_job.parent_job_id,
+        },
+        created_at=timestamp,
+        started_at=timestamp,
+        finished_at=timestamp,
+        locked_by=REUSED_CHILD_LOCKED_BY,
+        locked_at=timestamp,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job
 
 
 def list_child_jobs(db: Session, parent_job_id: str) -> list[Job]:
@@ -284,7 +393,7 @@ def serialize_job(
 ) -> JobRead:
     batch_state = None
     child_summary = None
-    if job.job_type == JobType.sync_arxiv_batch:
+    if _job_is_batch_root(job):
         child_jobs = child_jobs if child_jobs is not None else list_child_jobs(db, job.id)
         child_summary = _child_summary_for_batch(job, child_jobs)
         batch_state = _batch_state_for_job(job, child_summary)
@@ -320,7 +429,7 @@ def serialize_jobs(
     *,
     attempt_meta_by_id: dict[str, JobAttemptMeta] | None = None,
 ) -> list[JobRead]:
-    batch_parent_ids = [job.id for job in jobs if job.job_type == JobType.sync_arxiv_batch]
+    batch_parent_ids = [job.id for job in jobs if _job_is_batch_root(job)]
     child_jobs_by_parent: dict[str, list[Job]] = {}
     if batch_parent_ids:
         child_jobs = list(
@@ -341,9 +450,57 @@ def serialize_jobs(
     ]
 
 
-def _rerun_sync_arxiv_child_job(db: Session, job: Job, scope: ScopePayload) -> Job:
-    # Child reruns stay attached to the same batch parent and only enqueue this exact child scope.
-    return create_job(db, JobType.sync_arxiv, scope, parent_job_id=job.parent_job_id)
+def _batch_root_has_retryable_scopes(child_summary: ChildSummary) -> bool:
+    return child_summary.failed > 0 or child_summary.cancelled > 0 or child_summary.pending > 0
+
+
+def _rerun_direct_sync_job(db: Session, job: Job, scope: ScopePayload) -> Job:
+    latest_attempt = _latest_attempt_for_scope(
+        db,
+        job_type=job.job_type,
+        dedupe_key=job.dedupe_key,
+        parent_job_id=job.parent_job_id,
+    )
+    if latest_attempt is not None and latest_attempt.id != job.id and latest_attempt.status in ACTIVE_JOB_STATUSES:
+        raise RuntimeError("A newer attempt is still active")
+    return create_sync_job(db, job.job_type, scope)
+
+
+def _rerun_batch_child_job(db: Session, job: Job, scope: ScopePayload) -> Job:
+    parent_job = db.get(Job, job.parent_job_id) if job.parent_job_id is not None else None
+    if parent_job is None or not _job_is_batch_root(parent_job):
+        raise RuntimeError("Batch child job is missing its parent batch folder")
+
+    latest_parent = _latest_batch_root_attempt(db, parent_job)
+    if latest_parent is None or latest_parent.id != parent_job.id:
+        raise RuntimeError("Only child jobs from the latest batch attempt can be re-run")
+
+    latest_attempt = _latest_attempt_for_scope(
+        db,
+        job_type=job.job_type,
+        dedupe_key=job.dedupe_key,
+        parent_job_id=latest_parent.id,
+    )
+    if latest_attempt is not None and latest_attempt.id != job.id and latest_attempt.status in ACTIVE_JOB_STATUSES:
+        raise RuntimeError("A newer attempt is still active")
+    return create_job(db, job.job_type, scope, parent_job_id=latest_parent.id)
+
+
+def _rerun_batch_root_job(db: Session, job: Job, scope: ScopePayload) -> Job:
+    latest_batch_attempt = _latest_batch_root_attempt(db, job)
+    if latest_batch_attempt is None or latest_batch_attempt.id != job.id:
+        raise RuntimeError("Only the latest batch attempt can be re-run")
+
+    child_summary = _child_summary_for_batch(job, list_child_jobs(db, job.id))
+    if _batch_state_for_job(job, child_summary) in {"queued", "running", "stopping"}:
+        raise RuntimeError("Only finished jobs can be re-run")
+    if not _batch_root_has_retryable_scopes(child_summary):
+        raise RuntimeError("All child scopes already succeeded")
+
+    child_job_type = batch_child_job_type_for_root(job.job_type)
+    if child_job_type is None:
+        raise RuntimeError("Unsupported batch job type")
+    return create_sync_job(db, child_job_type, scope)
 
 
 def rerun_job(db: Session, job_id: str) -> Job:
@@ -354,27 +511,13 @@ def rerun_job(db: Session, job_id: str) -> Job:
         raise RuntimeError("Only finished jobs can be re-run")
 
     scope = build_scope_payload(job.scope_json)
-    if job.job_type == JobType.sync_arxiv_batch:
-        child_summary = _child_summary_for_batch(job, list_child_jobs(db, job.id))
-        if _batch_state_for_job(job, child_summary) in {"queued", "running", "stopping"}:
-            raise RuntimeError("Only finished jobs can be re-run")
-        return create_sync_arxiv_job(db, scope)
-    if job.job_type == JobType.sync_arxiv:
-        latest_attempt = db.scalar(
-            select(Job)
-            .where(
-                Job.job_type == JobType.sync_arxiv,
-                Job.dedupe_key == job.dedupe_key,
-                _parent_job_clause(job.parent_job_id),
-            )
-            .order_by(*job_display_order_by())
-        )
-        if latest_attempt is not None and latest_attempt.id != job.id and latest_attempt.status in {JobStatus.pending, JobStatus.running}:
-            raise RuntimeError("A newer attempt is still active")
+    if _job_is_batch_root(job):
+        return _rerun_batch_root_job(db, job, scope)
+    if job.job_type in {JobType.sync_arxiv, JobType.sync_links, JobType.enrich}:
         if job.parent_job_id is not None:
-            return _rerun_sync_arxiv_child_job(db, job, scope)
-        return create_sync_arxiv_job(db, scope)
-    raise ValueError("Re-run is only supported for arXiv jobs")
+            return _rerun_batch_child_job(db, job, scope)
+        return _rerun_direct_sync_job(db, job, scope)
+    raise ValueError("Re-run is only supported for sync jobs")
 
 
 def _stop_batch_job(db: Session, job: Job) -> Job:
@@ -403,7 +546,7 @@ def stop_job(db: Session, job_id: str) -> Job:
     if job is None:
         raise LookupError("Job not found")
 
-    if _is_batch_root_job(job):
+    if _job_is_batch_root(job):
         return _stop_batch_job(db, job)
 
     if job.status == JobStatus.pending:
@@ -419,19 +562,23 @@ def stop_job(db: Session, job_id: str) -> Job:
     raise RuntimeError("Only active jobs can be stopped")
 
 
-async def run_sync_arxiv_batch(
+async def run_batch_root_job(
     db: Session,
-    scope_json: dict[str, Any],
+    job: Job,
     *,
-    parent_job_id: str,
     progress: Callable[[dict[str, object]], None] | None = None,
     stop_check: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
-    child_scopes = expand_arxiv_child_scope_jsons(scope_json)
+    child_job_type = batch_child_job_type_for_root(job.job_type)
+    if child_job_type is None:
+        raise RuntimeError(f"Unsupported batch job type: {job.job_type}")
+
+    child_scopes = _planned_batch_child_scopes(job)
     stats = {
         "children_total": len(child_scopes),
-        "children_created": 0,
-        "children_reused": 0,
+        "children_enqueued": 0,
+        "children_reused_success": 0,
+        "children_existing": 0,
     }
     if progress is not None:
         progress(dict(stats))
@@ -439,21 +586,46 @@ async def run_sync_arxiv_batch(
     for child_scope_json in child_scopes:
         if stop_check is not None:
             stop_check()
-        child_scope = build_scope_payload(child_scope_json)
-        child, created = _create_job_record(
+
+        latest_child = _latest_batch_lineage_child_attempt(
             db,
-            JobType.sync_arxiv,
-            build_scope_json(child_scope),
-            parent_job_id=parent_job_id,
+            batch_job=job,
+            child_job_type=child_job_type,
+            child_scope_json=child_scope_json,
         )
-        if created:
-            stats["children_created"] += 1
+        if latest_child is not None and latest_child.parent_job_id == job.id and latest_child.status in {
+            JobStatus.pending,
+            JobStatus.running,
+            JobStatus.succeeded,
+        }:
+            stats["children_existing"] += 1
+            if progress is not None:
+                progress(dict(stats))
+            continue
+
+        if latest_child is not None and latest_child.status == JobStatus.succeeded:
+            _create_reused_child_record(
+                db,
+                child_job_type=child_job_type,
+                child_scope_json=child_scope_json,
+                parent_job_id=job.id,
+                source_job=latest_child,
+            )
+            stats["children_reused_success"] += 1
         else:
-            stats["children_reused"] += 1
+            child_scope = build_scope_payload(child_scope_json)
+            _child, created = _create_job_record(
+                db,
+                child_job_type,
+                build_scope_json(child_scope),
+                parent_job_id=job.id,
+            )
+            if created:
+                stats["children_enqueued"] += 1
+            else:
+                stats["children_existing"] += 1
         if progress is not None:
             progress(dict(stats))
-        # Keep the latest reference alive for debuggability even when reused.
-        _ = child
     return stats
 
 
@@ -512,14 +684,8 @@ async def process_job(job_id: str) -> None:
             stop_check()
             if job.job_type == JobType.sync_arxiv:
                 job.stats_json = await run_sync_arxiv(db, job.scope_json, progress=persist_progress, stop_check=stop_check)
-            elif job.job_type == JobType.sync_arxiv_batch:
-                job.stats_json = await run_sync_arxiv_batch(
-                    db,
-                    job.scope_json,
-                    parent_job_id=job.id,
-                    progress=persist_progress,
-                    stop_check=stop_check,
-                )
+            elif is_batch_root_job_type(job.job_type):
+                job.stats_json = await run_batch_root_job(db, job, progress=persist_progress, stop_check=stop_check)
             elif job.job_type == JobType.sync_links:
                 job.stats_json = await run_sync_links(db, job.scope_json, progress=persist_progress, stop_check=stop_check)
             elif job.job_type == JobType.enrich:

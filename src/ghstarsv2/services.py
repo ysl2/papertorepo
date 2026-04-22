@@ -37,6 +37,7 @@ from src.ghstars.providers.huggingface_links import (
 )
 from src.ghstars.storage.raw_cache import RawCacheStore
 from src.ghstarsv2.config import get_settings
+from src.ghstarsv2.job_batches import is_batch_root_job
 from src.ghstarsv2.job_order import job_execution_order_by
 from src.ghstarsv2.models import (
     ArxivArchiveAppearance,
@@ -184,10 +185,6 @@ def _categories_json_contains_any(categories: list[str]) -> object:
     return or_(*[cast(Paper.categories_json, String).like(f'%"{category}"%') for category in categories])
 
 
-def _is_batch_root_job(job: Job) -> bool:
-    return job.job_type == JobType.sync_arxiv_batch and job.parent_job_id is None
-
-
 def _job_sort_timestamp(value: datetime | None) -> float:
     coerced = _coerce_utc(value)
     if coerced is None:
@@ -201,7 +198,7 @@ def _pick_current_queue_job(active_jobs: list[Job]) -> Job | None:
     return sorted(
         active_jobs,
         key=lambda job: (
-            1 if _is_batch_root_job(job) else 0,
+            1 if is_batch_root_job(job.job_type, job.parent_job_id) else 0,
             -_job_sort_timestamp(job.locked_at),
             -_job_sort_timestamp(job.started_at),
             -_job_sort_timestamp(job.created_at),

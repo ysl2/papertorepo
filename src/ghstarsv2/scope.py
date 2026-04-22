@@ -78,15 +78,15 @@ def month_windows_between(start_date: date, end_date: date) -> list[ScopeWindow]
     current = month_start(start_date)
     windows: list[ScopeWindow] = []
     while current <= end_date:
-        month_start = current
-        month_end = _next_month_start(month_start) - timedelta(days=1)
+        current_month_start = current
+        month_end = _next_month_start(current_month_start) - timedelta(days=1)
         windows.append(
             ScopeWindow(
-                start_date=max(start_date, month_start),
+                start_date=max(start_date, current_month_start),
                 end_date=min(end_date, month_end),
             )
         )
-        current = _next_month_start(month_start)
+        current = _next_month_start(current_month_start)
     return windows
 
 
@@ -131,6 +131,43 @@ def expand_arxiv_child_scope_jsons(scope_json: dict[str, object]) -> list[dict[s
                     )
                 )
             )
+    return child_scopes
+
+
+def expand_month_priority_child_scope_jsons(scope_json: dict[str, object]) -> list[dict[str, Any]]:
+    categories = resolve_categories_from_scope_json(scope_json)
+    window = resolve_window_from_scope_json(scope_json)
+    if not categories or window.start_date is None or window.end_date is None:
+        return []
+
+    force = bool(scope_json.get("force"))
+    child_scopes: list[dict[str, Any]] = []
+    for month_window in month_windows_between(window.start_date, window.end_date):
+        start_date = month_window.start_date
+        end_date = month_window.end_date
+        if start_date is None or end_date is None:
+            continue
+        is_full_month = start_date == month_start(start_date) and end_date == (_next_month_start(month_start(start_date)) - timedelta(days=1))
+        if is_full_month:
+            child_scopes.append(
+                build_scope_json(
+                    ScopePayload(
+                        categories=categories,
+                        month=month_label(start_date),
+                        force=force,
+                    )
+                )
+            )
+            continue
+        child_scopes.append(
+            build_scope_json(
+                ScopePayload(
+                    categories=categories,
+                    **{"from": start_date, "to": end_date},
+                    force=force,
+                )
+            )
+        )
     return child_scopes
 
 

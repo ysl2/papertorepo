@@ -19,7 +19,9 @@ class JobType(str, enum.Enum):
     sync_arxiv = "sync_arxiv"
     sync_arxiv_batch = "sync_arxiv_batch"
     sync_links = "sync_links"
+    sync_links_batch = "sync_links_batch"
     enrich = "enrich"
+    enrich_batch = "enrich_batch"
     export = "export"
 
 

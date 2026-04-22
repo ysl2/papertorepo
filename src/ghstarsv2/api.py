@@ -15,6 +15,7 @@ from src.ghstarsv2.db import get_db
 from src.ghstarsv2.job_order import job_display_order_by
 from src.ghstarsv2.jobs import (
     create_job,
+    create_sync_job,
     create_sync_arxiv_job,
     get_job_attempt_meta,
     list_job_attempts_read,
@@ -100,6 +101,13 @@ def serialize_paper(paper: Paper) -> PaperRead:
 def _enqueue_job(db: Session, job_type: JobType, scope: ScopePayload) -> JobRead:
     try:
         return serialize_job(db, create_job(db, job_type, scope))
+    except (ValueError, ValidationError) as exc:
+        raise _scope_http_exception(exc) from exc
+
+
+def _enqueue_sync_job(db: Session, job_type: JobType, scope: ScopePayload) -> JobRead:
+    try:
+        return serialize_job(db, create_sync_job(db, job_type, scope))
     except (ValueError, ValidationError) as exc:
         raise _scope_http_exception(exc) from exc
 
@@ -326,11 +334,11 @@ def register_routes(app: FastAPI) -> None:
 
     @router.post("/jobs/sync-links", response_model=JobRead)
     def enqueue_sync_links(scope: ScopePayload, db: Session = Depends(get_db)) -> JobRead:
-        return _enqueue_job(db, JobType.sync_links, scope)
+        return _enqueue_sync_job(db, JobType.sync_links, scope)
 
     @router.post("/jobs/enrich", response_model=JobRead)
     def enqueue_enrich(scope: ScopePayload, db: Session = Depends(get_db)) -> JobRead:
-        return _enqueue_job(db, JobType.enrich, scope)
+        return _enqueue_sync_job(db, JobType.enrich, scope)
 
     @router.post("/jobs/export", response_model=JobRead)
     def enqueue_export(scope: ScopePayload, db: Session = Depends(get_db)) -> JobRead:

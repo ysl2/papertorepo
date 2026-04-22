@@ -7,7 +7,17 @@ import pytest
 
 from src.ghstarsv2.app import app
 from src.ghstarsv2.db import session_scope
-from src.ghstarsv2.jobs import claim_next_job, create_job, create_sync_arxiv_job, list_child_jobs, process_job, rerun_job, serialize_job
+from src.ghstarsv2.jobs import (
+    claim_next_job,
+    create_job,
+    create_sync_arxiv_job,
+    create_sync_job,
+    list_child_jobs,
+    process_job,
+    rerun_job,
+    serialize_job,
+)
+from src.ghstarsv2.job_batches import planned_child_scope_jsons
 from src.ghstarsv2.models import Job, JobStatus, JobType
 from src.ghstarsv2.scope import expand_arxiv_child_scope_jsons
 from src.ghstarsv2.schemas import ScopePayload
@@ -45,6 +55,90 @@ def test_expand_arxiv_child_scope_jsons_inherit_force_flag():
 
     assert len(child_scopes) == 2
     assert all(child_scope["force"] is True for child_scope in child_scopes)
+
+
+def test_planned_child_scope_jsons_keep_partial_edges_contiguous_for_sync_links():
+    child_scopes = planned_child_scope_jsons(
+        JobType.sync_links,
+        {
+            "categories": ["cs.CV"],
+            "from": "2025-03-15",
+            "to": "2025-06-10",
+            "force": True,
+            "max_results": None,
+            "day": None,
+            "month": None,
+            "export_mode": None,
+            "paper_ids": [],
+            "output_name": None,
+        },
+    )
+
+    assert child_scopes == [
+        {
+            "categories": ["cs.CV"],
+            "day": None,
+            "month": None,
+            "from": "2025-03-15",
+            "to": "2025-03-31",
+            "max_results": None,
+            "force": True,
+            "export_mode": None,
+            "paper_ids": [],
+            "output_name": None,
+        },
+        {
+            "categories": ["cs.CV"],
+            "day": None,
+            "month": "2025-04",
+            "from": None,
+            "to": None,
+            "max_results": None,
+            "force": True,
+            "export_mode": None,
+            "paper_ids": [],
+            "output_name": None,
+        },
+        {
+            "categories": ["cs.CV"],
+            "day": None,
+            "month": "2025-05",
+            "from": None,
+            "to": None,
+            "max_results": None,
+            "force": True,
+            "export_mode": None,
+            "paper_ids": [],
+            "output_name": None,
+        },
+        {
+            "categories": ["cs.CV"],
+            "day": None,
+            "month": None,
+            "from": "2025-06-01",
+            "to": "2025-06-10",
+            "max_results": None,
+            "force": True,
+            "export_mode": None,
+            "paper_ids": [],
+            "output_name": None,
+        },
+    ]
+
+
+def test_create_sync_job_uses_batch_for_multi_window_link_scope(db_env):
+    with session_scope() as db:
+        job = create_sync_job(
+            db,
+            JobType.sync_links,
+            ScopePayload(
+                categories=["cs.CV"],
+                **{"from": date(2025, 3, 15), "to": date(2025, 6, 10)},
+            ),
+        )
+
+    assert job.job_type == JobType.sync_links_batch
+    assert job.parent_job_id is None
 
 
 @pytest.mark.anyio
@@ -120,7 +214,7 @@ async def test_batch_summary_uses_latest_child_attempt_per_scope(db_env):
     assert serialized.batch_state == "succeeded"
 
 
-def test_rerun_api_supports_batch_parent_and_child_jobs(db_env):
+def test_rerun_api_supports_failed_only_batch_parent_rerun(db_env):
     with session_scope() as db:
         parent = create_sync_arxiv_job(
             db,
@@ -153,22 +247,87 @@ def test_rerun_api_supports_batch_parent_and_child_jobs(db_env):
     with TestClient(app) as client:
         batch_response = client.post(f"/api/v1/jobs/{parent.id}/rerun")
         child_response = client.post(f"/api/v1/jobs/{child.id}/rerun")
-        latest_children_response = client.get(f"/api/v1/jobs?parent_id={parent.id}&view=latest&limit=10")
-        all_children_response = client.get(f"/api/v1/jobs?parent_id={parent.id}&view=all&limit=10")
-        attempts_response = client.get(f"/api/v1/jobs/{child.id}/attempts?limit=10")
 
     assert batch_response.status_code == 200
     assert batch_response.json()["job_type"] == JobType.sync_arxiv_batch.value
     assert batch_response.json()["parent_job_id"] is None
+    assert child_response.status_code == 409
+
+    rerun_batch_id = batch_response.json()["id"]
+
+    import asyncio
+
+    asyncio.run(process_job(rerun_batch_id))
+
+    with session_scope() as db:
+        rerun_batch = db.get(Job, rerun_batch_id)
+        assert rerun_batch is not None
+        refreshed_children = list(db.query(Job).filter(Job.parent_job_id == rerun_batch_id).order_by(Job.created_at.asc()).all())
+
+    assert rerun_batch.status == JobStatus.succeeded
+    assert len(refreshed_children) == 2
+    assert sum(1 for item in refreshed_children if item.scope_json == child_scope and item.status == JobStatus.pending) == 1
+    reused_sibling = next(item for item in refreshed_children if item.scope_json in sibling_scopes)
+    assert reused_sibling.status == JobStatus.succeeded
+    assert reused_sibling.stats_json["reused"] is True
+    assert reused_sibling.stats_json["reused_from_job_id"] in {item.id for item in children[1:]}
+
+
+def test_rerun_api_supports_latest_batch_child_jobs(db_env):
+    with session_scope() as db:
+        parent = create_sync_arxiv_job(
+            db,
+            ScopePayload(
+                categories=["cs.CV"],
+                **{"from": date(2025, 3, 15), "to": date(2025, 4, 10)},
+            ),
+        )
+
+    with session_scope() as db:
+        claimed = claim_next_job(db, "worker:test")
+    assert claimed is not None
+
+    import asyncio
+
+    asyncio.run(process_job(parent.id))
+
+    with session_scope() as db:
+        children = list(db.query(Job).filter(Job.parent_job_id == parent.id).order_by(Job.created_at.asc()).all())
+        child = children[0]
+        child.status = JobStatus.failed
+        child.finished_at = child.created_at
+        for sibling in children[1:]:
+            sibling.status = JobStatus.succeeded
+            sibling.finished_at = sibling.created_at
+
+    with TestClient(app) as client:
+        batch_response = client.post(f"/api/v1/jobs/{parent.id}/rerun")
+
+    assert batch_response.status_code == 200
+    rerun_batch_id = batch_response.json()["id"]
+    asyncio.run(process_job(rerun_batch_id))
+
+    with session_scope() as db:
+        latest_batch_children = list(db.query(Job).filter(Job.parent_job_id == rerun_batch_id).order_by(Job.created_at.asc()).all())
+        latest_child = next(item for item in latest_batch_children if item.status == JobStatus.pending)
+        latest_child.status = JobStatus.failed
+        latest_child.finished_at = latest_child.created_at
+        latest_child_scope = dict(latest_child.scope_json)
+
+    with TestClient(app) as client:
+        child_response = client.post(f"/api/v1/jobs/{latest_child.id}/rerun")
+        latest_children_response = client.get(f"/api/v1/jobs?parent_id={rerun_batch_id}&view=latest&limit=10")
+        all_children_response = client.get(f"/api/v1/jobs?parent_id={rerun_batch_id}&view=all&limit=10")
+        attempts_response = client.get(f"/api/v1/jobs/{latest_child.id}/attempts?limit=10")
 
     assert child_response.status_code == 200
     assert child_response.json()["job_type"] == JobType.sync_arxiv.value
-    assert child_response.json()["parent_job_id"] == parent.id
+    assert child_response.json()["parent_job_id"] == rerun_batch_id
 
     assert latest_children_response.status_code == 200
     latest_children = latest_children_response.json()
     assert len(latest_children) == 2
-    latest_rerun_child = next(item for item in latest_children if item["scope_json"] == child_scope)
+    latest_rerun_child = next(item for item in latest_children if item["scope_json"] == latest_child_scope)
     assert latest_rerun_child["id"] == child_response.json()["id"]
     assert latest_rerun_child["attempt_count"] == 2
     assert latest_rerun_child["attempt_rank"] == 1
@@ -176,26 +335,16 @@ def test_rerun_api_supports_batch_parent_and_child_jobs(db_env):
     assert all_children_response.status_code == 200
     all_children = all_children_response.json()
     assert len(all_children) == 3
-    original_child = next(item for item in all_children if item["id"] == child.id)
+    original_child = next(item for item in all_children if item["id"] == latest_child.id)
     assert original_child["attempt_count"] == 2
     assert original_child["attempt_rank"] == 2
 
     assert attempts_response.status_code == 200
     attempts = attempts_response.json()
     assert len(attempts) == 2
-    assert [item["id"] for item in attempts] == [child_response.json()["id"], child.id]
+    assert [item["id"] for item in attempts] == [child_response.json()["id"], latest_child.id]
     assert [item["attempt_rank"] for item in attempts] == [1, 2]
     assert all(item["attempt_count"] == 2 for item in attempts)
-
-    with session_scope() as db:
-        refreshed_children = list(db.query(Job).filter(Job.parent_job_id == parent.id).order_by(Job.created_at.asc()).all())
-
-    assert len(refreshed_children) == 3
-    assert sum(1 for item in refreshed_children if item.scope_json == child_scope) == 2
-    assert sum(1 for item in refreshed_children if item.scope_json in sibling_scopes) == len(sibling_scopes)
-
-    rerun_child = next(item for item in refreshed_children if item.id == child_response.json()["id"])
-    assert rerun_child.scope_json == child_scope
 
 
 def test_list_jobs_root_only_excludes_child_jobs(db_env):

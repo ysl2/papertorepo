@@ -115,7 +115,9 @@ SYNC_JOB_TYPES_REQUIRING_CATEGORIES = {
     JobType.sync_arxiv,
     JobType.sync_arxiv_batch,
     JobType.sync_links,
+    JobType.sync_links_batch,
     JobType.enrich,
+    JobType.enrich_batch,
 }
 
 
