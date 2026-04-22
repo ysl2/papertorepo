@@ -1,6 +1,6 @@
 import pytest
 
-from src.ghstars.providers.arxiv_metadata import ArxivMetadataClient, parse_papers_from_feed
+from papertorepo.providers.arxiv_metadata import ArxivMetadataClient, parse_papers_from_feed
 
 
 def test_parse_papers_from_feed_extracts_core_fields():
@@ -43,7 +43,7 @@ async def test_fetch_id_list_feed_requests_all_ids(monkeypatch):
         captured["max_retries"] = max_retries
         return 200, "<feed />", {"Content-Type": "application/atom+xml"}, None
 
-    monkeypatch.setattr("src.ghstars.providers.arxiv_metadata.request_text", fake_request_text)
+    monkeypatch.setattr("papertorepo.providers.arxiv_metadata.request_text", fake_request_text)
 
     client = ArxivMetadataClient(session=object(), min_interval=0.5)
     status, body, headers, error = await client.fetch_id_list_feed(["2503.00001", "2503.00002", "2503.00003"])

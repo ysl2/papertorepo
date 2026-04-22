@@ -1,4 +1,4 @@
-from src.ghstars.providers.huggingface_links import (
+from papertorepo.providers.huggingface_links import (
     extract_github_url_from_hf_html,
     extract_github_url_from_hf_payload,
     extract_paper_id_from_search_html,

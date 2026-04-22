@@ -1,5 +1,5 @@
-from src.ghstars.associate.resolver import build_final_links, parity_summary
-from src.ghstars.models import PaperRepoLink, RepoObservation
+from papertorepo.services.link_resolver import build_final_links, parity_summary
+from papertorepo.core.records import PaperRepoLink, RepoObservation
 
 
 def make_observation(*, provider: str, surface: str, url: str | None, status: str = "found") -> RepoObservation:

@@ -1,191 +1,90 @@
-# ghstars
+# papertorepo
 
-`ghstars` is a shared workspace service for:
+`papertorepo` is a shared workspace service for:
 
-1. syncing a batch of arXiv papers into PostgreSQL
-2. finding exact GitHub repos for those papers
-3. enriching linked repos with GitHub metadata
-4. exporting scoped CSV snapshots
+1. syncing arXiv papers into PostgreSQL
+2. discovering linked GitHub repositories
+3. enriching repository metadata
+4. exporting CSV snapshots
 
-This V2 path is intentionally simple:
+The current system is intentionally simple:
 
-- one shared workspace
 - one PostgreSQL database
 - one FastAPI app
 - one background worker
 - one WebUI
 - one flat CLI
 
-No user system is required for the current version. Visitors operate on the same queue and the same dataset.
+## Structure
 
-## Main ideas
+The backend uses a single installable Python package under `src/`:
 
-### Database first
+```text
+src/papertorepo/
+  api/
+  core/
+  db/
+  jobs/
+  providers/
+  services/
+  storage/
+```
 
-Papers, current repo observations, stable link state, repo metadata, jobs, raw fetch records, and exports all live in PostgreSQL.
+The frontend lives in `frontend/`.
+Database migrations stay in the root `alembic/` directory.
 
-### Cheap where possible, conservative where necessary
+## Runtime model
 
-`sync-links` only re-checks papers when the repo state is:
+- `sync-arxiv` stores arXiv results in PostgreSQL
+- `sync-links` respects TTL and only re-checks papers that are unknown, missing, expired, or forced
+- `enrich` refreshes dynamic GitHub metadata every run while preserving stable metadata once initialized
+- `export` writes CSV snapshots under the runtime data directory and records them in the database
 
-- `unknown`
-- missing entirely
-- past its `refresh_after` TTL
-- forced explicitly
+The default queue is serial:
 
-If a paper is deterministically `found` or `not_found`, it waits 7 days before the next full repo lookup.
-
-If a lookup is incomplete because of network/provider failure and no trustworthy repo was found, the paper stays `unknown` or keeps its previous stable result. Incomplete fetches do not stamp a trusted `not_found`.
-
-### Metadata refresh policy
-
-`enrich` treats GitHub fields in two groups:
-
-- dynamic: `stars`, `description`, `homepage`, `topics`, `license`, `archived`, `pushed_at`
-- stable: `github_id`, `created_at`
-
-Dynamic fields refresh every enrich run. Stable fields are only initialized once or filled when still missing.
-
-## Architecture
-
-Current V2 runtime:
-
-- `main.py`: flat CLI entry
-- `src/ghstarsv2/app.py`: FastAPI app
-- `src/ghstarsv2/jobs.py`: shared job queue + worker claiming
-- `src/ghstarsv2/services.py`: sync/enrich/export pipeline logic
-- `frontend/`: React WebUI
-
-The older `src/ghstars/` package is still kept for parser/provider reuse, but it is no longer the main runtime path.
-
-## Queue semantics
-
-The current queue is intentionally serial.
-
-- the default Compose topology starts exactly one `worker`
-- that worker claims exactly one pending job at a time
-- later jobs wait in FIFO order instead of running in parallel
-
-This is deliberate for now:
-
-- `sync-arxiv` and `sync-links` both consume arXiv capacity
-- rate limiting is process-local, not globally coordinated
-- later steps currently snapshot the database at start, so same-scope cross-step parallelism can miss newly inserted papers or repos
-
-If throughput needs to increase later, that should be done with a dedicated scheduler redesign instead of simply adding more workers.
+- one worker
+- one claimed job at a time
+- later jobs wait in queue order
 
 ## Quick start
 
-### 1. Docker Compose workflow
-
-This is the main runtime path.
+### Docker Compose
 
 ```bash
 cp .env.example .env
 docker compose up --build
 ```
 
-This starts:
+Open `http://127.0.0.1:8000`.
 
-- `db`: PostgreSQL
-- `app`: FastAPI + built frontend
-- `worker`: background job worker
-
-Compose runtime data is stored in a Docker named volume.
-This avoids macOS bind-mount issues and keeps V2 isolated from any older local `./data/` directory or legacy SQLite artifacts.
-
-Open:
-
-```text
-http://127.0.0.1:8000
-```
-
-Run CLI commands against the same shared workspace:
+Run CLI commands against the same workspace:
 
 ```bash
-docker compose exec app uv run python main.py jobs
-docker compose exec app uv run python main.py sync-arxiv --categories cs.CV --month 2026-04
-docker compose exec app uv run python main.py sync-links --categories cs.CV --month 2026-04
-docker compose exec app uv run python main.py enrich --categories cs.CV --month 2026-04
-docker compose exec app uv run python main.py export --categories cs.CV --month 2026-04 --output cv-2026-04.csv
+docker compose exec app uv run papertorepo jobs
+docker compose exec app uv run papertorepo sync-arxiv --categories cs.CV --month 2026-04
+docker compose exec app uv run papertorepo sync-links --categories cs.CV --month 2026-04
+docker compose exec app uv run papertorepo enrich --categories cs.CV --month 2026-04
+docker compose exec app uv run papertorepo export --categories cs.CV --month 2026-04 --output cv-2026-04.csv
 ```
 
-### 2. Local Python workflow
-
-This is optional and assumes you already have a PostgreSQL instance reachable from the host.
+### Local workflow
 
 ```bash
-uv sync
+uv sync --dev
 cp .env.example .env
-```
-
-Before starting the app, update `DATABASE_URL` in `.env` so it points to your host-accessible PostgreSQL, for example:
-
-```dotenv
-DATABASE_URL=postgresql+psycopg://ghstars:ghstars@127.0.0.1:5432/ghstars
-```
-
-Then start the API:
-
-```bash
-uv run python main.py serve
+uv run papertorepo serve
 ```
 
 Start the worker in another terminal:
 
 ```bash
-uv run python main.py worker
+uv run papertorepo worker
 ```
-
-Open:
-
-```text
-http://127.0.0.1:8000
-```
-
-## CLI
-
-The CLI is flat by design:
-
-```bash
-uv run python main.py serve
-uv run python main.py worker
-uv run python main.py sync-arxiv --categories cs.CV --month 2026-04
-uv run python main.py sync-links --categories cs.CV --month 2026-04
-uv run python main.py enrich --categories cs.CV --month 2026-04
-uv run python main.py export --categories cs.CV --month 2026-04 --output cv-2026-04.csv
-uv run python main.py jobs
-uv run python main.py papers --categories cs.CV --month 2026-04
-uv run python main.py repos
-uv run python main.py exports
-uv run python main.py debug-arxiv-listing-baseline --categories cs.CV --from 2025-03-01 --to 2026-03-31
-uv run python main.py debug-arxiv-listing-compare --categories cs.CV --from 2025-03-01 --to 2026-03-31
-```
-
-CLI command names stay hyphenated for user-facing consistency. Internal job type ids stay underscore-based.
-
-The `debug-arxiv-listing-baseline` command fetches arXiv listing pages directly and writes one CSV per month under `data/debug/arxiv_listing_baseline/`. It is intended for gold-standard ingestion debugging, not normal exports.
-
-## WebUI
-
-The WebUI is a single shared control plane:
-
-- set scope
-- queue `sync-arxiv`
-- queue `sync-links`
-- queue `enrich`
-- queue `export`
-- inspect recent jobs
-- inspect scoped papers
-- inspect enriched repos
-- download exports
 
 ## Environment
 
-Compose-oriented `.env` example:
-
 ```dotenv
-DATABASE_URL=postgresql+psycopg://ghstars:ghstars@db:5432/ghstars
+DATABASE_URL=postgresql+psycopg://papertorepo:papertorepo@db:5432/papertorepo
 DATA_DIR=data
 
 DEFAULT_CATEGORIES=cs.CV
@@ -210,4 +109,5 @@ JOB_TIMEOUT_SECONDS=1800
 ```bash
 uv sync --dev
 uv run pytest
+cd frontend && npm ci && npm run build
 ```

@@ -1,5 +1,5 @@
-from src.ghstars.normalize.arxiv import extract_arxiv_id_from_single_paper_url, normalize_arxiv_url
-from src.ghstars.normalize.github import extract_github_repo_urls, normalize_github_url
+from papertorepo.core.normalize.arxiv import extract_arxiv_id_from_single_paper_url, normalize_arxiv_url
+from papertorepo.core.normalize.github import extract_github_repo_urls, normalize_github_url
 
 
 def test_normalize_arxiv_abs_url():

@@ -226,10 +226,10 @@ const ACTIVE_DASHBOARD_POLL_MS = 1000
 const IDLE_DASHBOARD_POLL_MS = 8000
 const ACTIVE_JOBS_POLL_MS = 1000
 const PASSIVE_JOBS_POLL_MS = 5000
-const LEGACY_SCOPE_STORAGE_KEY = 'ghstars:scope:v3'
-const OLDER_SCOPE_STORAGE_KEY = 'ghstars:scope:v4'
-const PREVIOUS_SCOPE_STORAGE_KEY = 'ghstars:scope:v5'
-const SCOPE_STORAGE_KEY = 'ghstars:scope:v6'
+const LEGACY_SCOPE_STORAGE_KEY = 'papertorepo:scope:v3'
+const OLDER_SCOPE_STORAGE_KEY = 'papertorepo:scope:v4'
+const PREVIOUS_SCOPE_STORAGE_KEY = 'papertorepo:scope:v5'
+const SCOPE_STORAGE_KEY = 'papertorepo:scope:v6'
 const MONTH_START_YEAR = 1991
 const MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/
 const DATE_PATTERN = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/
@@ -1534,17 +1534,6 @@ function App() {
     (dashboard?.stopping_jobs ?? 0) > 0
 
   useEffect(() => {
-    const queueState = dashboard?.job_queue_summary.state ?? 'idle'
-    if (queueState !== 'idle') {
-      setQueueHandoffJob(null)
-      if (queueHandoffTimeoutRef.current !== null) {
-        window.clearTimeout(queueHandoffTimeoutRef.current)
-        queueHandoffTimeoutRef.current = null
-      }
-    }
-  }, [dashboard?.job_queue_summary.state])
-
-  useEffect(() => {
     return () => {
       if (queueHandoffTimeoutRef.current !== null) {
         window.clearTimeout(queueHandoffTimeoutRef.current)
@@ -2548,11 +2537,7 @@ function App() {
   )
 
   useEffect(() => {
-    if (previewTab !== 'jobs' || !selectedJobId) {
-      setSelectedJobRefreshTick(0)
-      return
-    }
-    setSelectedJobRefreshTick((value) => value + 1)
+    if (previewTab !== 'jobs' || !selectedJobId) return
     const timer = window.setInterval(() => setSelectedJobRefreshTick((value) => value + 1), ACTIVE_JOBS_POLL_MS)
     return () => window.clearInterval(timer)
   }, [previewTab, selectedJobId])
@@ -3227,7 +3212,7 @@ function App() {
         onSelectedKeyChange={setSelectedPaperId}
         onDisplayedKeysChange={handleDisplayedKeysChange}
         quickSearch={deferredTableSearch}
-        persistenceId="ghstars-papers"
+        persistenceId="papertorepo-papers"
         emptyMessage="No papers are stored yet."
         toolbarLeading={sheetToolbarLeading}
         toolbarActions={sheetToolbarActions}
@@ -3250,7 +3235,7 @@ function App() {
         onSelectedKeyChange={setSelectedJobId}
         onDisplayedKeysChange={handleDisplayedKeysChange}
         quickSearch={deferredTableSearch}
-        persistenceId="ghstars-jobs-v2"
+        persistenceId="papertorepo-jobs"
         emptyMessage="No jobs yet."
         toolbarLeading={sheetToolbarLeading}
         toolbarActions={sheetToolbarActions}
@@ -3274,7 +3259,7 @@ function App() {
         onSelectedKeyChange={setSelectedExportId}
         onDisplayedKeysChange={handleDisplayedKeysChange}
         quickSearch={deferredTableSearch}
-        persistenceId="ghstars-exports"
+        persistenceId="papertorepo-exports"
         emptyMessage="No exports yet."
         toolbarLeading={sheetToolbarLeading}
         toolbarActions={sheetToolbarActions}
@@ -3290,7 +3275,7 @@ function App() {
       <header className="topbar panel">
         <div className="headline">
           <div>
-            <p className="eyebrow">ghstars v2</p>
+            <p className="eyebrow">papertorepo</p>
             <h1>Research Workspace</h1>
           </div>
           <p className="lede">Pull arXiv papers, find GitHub repos, refresh repo facts, and export the working set.</p>

@@ -779,9 +779,9 @@ function CompactConditionColumnFilter(props: CompactConditionFilterProps) {
   }
 
   return (
-    <div className="ghstars-filter-panel" onKeyDown={stopGridKeyboardPropagation}>
-      <div className="ghstars-filter-rows">
-        <div className="ghstars-filter-row">
+    <div className="papertorepo-filter-panel" onKeyDown={stopGridKeyboardPropagation}>
+      <div className="papertorepo-filter-rows">
+        <div className="papertorepo-filter-row">
           <select
             ref={operatorRef}
             value={displayState.conditions[0].type}
@@ -803,8 +803,8 @@ function CompactConditionColumnFilter(props: CompactConditionFilterProps) {
           />
         </div>
 
-        <div className={firstConditionActive ? 'ghstars-filter-join-row' : 'ghstars-filter-join-row disabled'}>
-          <div className="ghstars-filter-join" role="group" aria-label="Combine conditions">
+        <div className={firstConditionActive ? 'papertorepo-filter-join-row' : 'papertorepo-filter-join-row disabled'}>
+          <div className="papertorepo-filter-join" role="group" aria-label="Combine conditions">
             <button
               type="button"
               disabled={!firstConditionActive}
@@ -824,7 +824,7 @@ function CompactConditionColumnFilter(props: CompactConditionFilterProps) {
           </div>
         </div>
 
-        <div className={firstConditionActive ? 'ghstars-filter-row secondary' : 'ghstars-filter-row secondary disabled'}>
+        <div className={firstConditionActive ? 'papertorepo-filter-row secondary' : 'papertorepo-filter-row secondary disabled'}>
           <select
             value={displayState.conditions[1].type}
             disabled={!firstConditionActive}
@@ -857,7 +857,7 @@ function CompactConditionColumnFilter(props: CompactConditionFilterProps) {
         {conditionPreviewLabel(previewSummary)}
       </div>
 
-      <div className="ghstars-filter-footer">
+      <div className="papertorepo-filter-footer">
         <button
           type="button"
           className="compact-filter-reset"
@@ -1005,7 +1005,7 @@ function CompactSetColumnFilter(props: CompactSetFilterProps) {
   }
 
   return (
-    <div className="ghstars-filter-panel" onKeyDown={stopGridKeyboardPropagation}>
+    <div className="papertorepo-filter-panel" onKeyDown={stopGridKeyboardPropagation}>
       <div className="compact-set-filter-search-shell">
         <input
           ref={searchRef}
@@ -1063,7 +1063,7 @@ function CompactSetColumnFilter(props: CompactSetFilterProps) {
         )}
       </div>
 
-      <div className="ghstars-filter-footer">
+      <div className="papertorepo-filter-footer">
         <button
           type="button"
           className="compact-filter-reset"

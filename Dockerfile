@@ -17,8 +17,8 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md main.py .env.example alembic.ini ./
 COPY alembic ./alembic
 COPY src ./src
-RUN uv sync --no-dev
+RUN uv sync --frozen --no-dev
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 ENV PATH="/app/.venv/bin:${PATH}"
 EXPOSE 8000
-CMD ["sh", "-lc", "uv run python main.py migrate && uv run python main.py serve --host 0.0.0.0 --port 8000"]
+CMD ["sh", "-lc", "uv run papertorepo migrate && uv run papertorepo serve --host 0.0.0.0 --port 8000"]

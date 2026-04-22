@@ -5,8 +5,8 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from src.ghstarsv2.db import Base
-from src.ghstarsv2.models import *  # noqa: F403
+from papertorepo.db.session import Base
+from papertorepo.db.models import *  # noqa: F403
 
 
 config = context.config

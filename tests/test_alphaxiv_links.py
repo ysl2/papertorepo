@@ -1,4 +1,4 @@
-from src.ghstars.providers.alphaxiv_links import (
+from papertorepo.providers.alphaxiv_links import (
     extract_github_url_from_alphaxiv_html,
     extract_github_url_from_alphaxiv_payload,
 )

@@ -1,12 +1,14 @@
+name: papertorepo
+
 services:
   db:
     image: postgres:17-alpine
     environment:
-      POSTGRES_DB: ghstars
-      POSTGRES_USER: ghstars
-      POSTGRES_PASSWORD: ghstars
+      POSTGRES_DB: papertorepo
+      POSTGRES_USER: papertorepo
+      POSTGRES_PASSWORD: papertorepo
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ghstars -d ghstars"]
+      test: ["CMD-SHELL", "pg_isready -U papertorepo -d papertorepo"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -18,7 +20,7 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql+psycopg://ghstars:ghstars@db:5432/ghstars
+      DATABASE_URL: postgresql+psycopg://papertorepo:papertorepo@db:5432/papertorepo
       DATA_DIR: /app/data
     depends_on:
       db:
@@ -30,11 +32,11 @@ services:
 
   worker:
     build: .
-    command: ["sh", "-lc", "uv run python main.py migrate && uv run python main.py worker"]
+    command: ["sh", "-lc", "uv run papertorepo migrate && uv run papertorepo worker"]
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql+psycopg://ghstars:ghstars@db:5432/ghstars
+      DATABASE_URL: postgresql+psycopg://papertorepo:papertorepo@db:5432/papertorepo
       DATA_DIR: /app/data
     depends_on:
       db:

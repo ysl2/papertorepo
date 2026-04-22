@@ -58,7 +58,7 @@ type AgGridSheetProps<TData extends RowRecord = RowRecord> = {
 }
 
 function storageKey(id: string) {
-  return `ghstars:grid:v2:${id}`
+  return `papertorepo:grid:v1:${id}`
 }
 
 function normalizeGridState(state: GridState | undefined): GridState | undefined {
@@ -171,10 +171,10 @@ function clampPopupToViewport(popup: HTMLElement) {
 
 function bindPopupViewportHandling(popup: HTMLElement) {
   if (typeof window === 'undefined') return
-  if (popup.dataset.ghstarsPopupViewportBound === 'true') return
+  if (popup.dataset.papertorepoPopupViewportBound === 'true') return
 
-  popup.dataset.ghstarsPopupViewportBound = 'true'
-  popup.classList.add('ag-theme-balham', 'ghstars-grid-popup')
+  popup.dataset.papertorepoPopupViewportBound = 'true'
+  popup.classList.add('ag-theme-balham', 'papertorepo-grid-popup')
 
   let frameId: number | null = null
   const schedule = () => {
@@ -225,7 +225,7 @@ function bindPopupViewportHandling(popup: HTMLElement) {
     resizeObserver?.disconnect()
     popupObserver.disconnect()
     mutationObserver?.disconnect()
-    delete popup.dataset.ghstarsPopupViewportBound
+    delete popup.dataset.papertorepoPopupViewportBound
   }
 
   if (parent) {
@@ -443,7 +443,7 @@ export default function AgGridSheet<TData extends RowRecord>({
   function handlePopupPostProcess(params: PostProcessPopupParams<TData>) {
     const isFilterPopup =
       params.ePopup.matches('.ag-menu.ag-filter-menu') ||
-      params.ePopup.querySelector('.ag-filter, .ghstars-filter-panel, .ag-rich-select-list') !== null
+      params.ePopup.querySelector('.ag-filter, .papertorepo-filter-panel, .ag-rich-select-list') !== null
     if (!isFilterPopup) return
     bindPopupViewportHandling(params.ePopup)
   }
