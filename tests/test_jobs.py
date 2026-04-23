@@ -45,7 +45,7 @@ def test_create_job_defaults_attempt_mode_to_fresh(job_env):
 
 def test_rerun_job_creates_repair_attempt(job_env):
     with session_scope() as db:
-        job = create_job(db, JobType.sync_links, ScopePayload(categories=["cs.CV"], day=date(2026, 4, 21)))
+        job = create_job(db, JobType.find_repos, ScopePayload(categories=["cs.CV"], day=date(2026, 4, 21)))
         job.status = JobStatus.succeeded
         job.finished_at = utc_now()
         db.add(job)
@@ -60,8 +60,8 @@ def test_rerun_job_creates_repair_attempt(job_env):
 
 def test_same_scope_fresh_runs_do_not_share_attempt_series(job_env):
     with session_scope() as db:
-        first = create_job(db, JobType.sync_links, ScopePayload(categories=["cs.CV"], day=date(2026, 4, 21)))
-        second = create_job(db, JobType.sync_links, ScopePayload(categories=["cs.CV"], day=date(2026, 4, 21)))
+        first = create_job(db, JobType.find_repos, ScopePayload(categories=["cs.CV"], day=date(2026, 4, 21)))
+        second = create_job(db, JobType.find_repos, ScopePayload(categories=["cs.CV"], day=date(2026, 4, 21)))
 
     assert first.attempt_series_key != second.attempt_series_key
 
@@ -75,8 +75,8 @@ def test_same_scope_fresh_runs_do_not_share_attempt_series(job_env):
 
 def test_rerun_attaches_to_clicked_fresh_series_not_newer_same_scope_fresh(job_env):
     with session_scope() as db:
-        first = create_job(db, JobType.sync_links, ScopePayload(categories=["cs.CV"], day=date(2026, 4, 21)))
-        second = create_job(db, JobType.sync_links, ScopePayload(categories=["cs.CV"], day=date(2026, 4, 21)))
+        first = create_job(db, JobType.find_repos, ScopePayload(categories=["cs.CV"], day=date(2026, 4, 21)))
+        second = create_job(db, JobType.find_repos, ScopePayload(categories=["cs.CV"], day=date(2026, 4, 21)))
         first.status = JobStatus.succeeded
         first.finished_at = utc_now()
         second.status = JobStatus.succeeded
@@ -105,7 +105,7 @@ def test_rerun_attaches_to_clicked_fresh_series_not_newer_same_scope_fresh(job_e
 
 def test_only_latest_repair_chain_node_can_rerun(job_env):
     with session_scope() as db:
-        root = create_job(db, JobType.sync_links, ScopePayload(categories=["cs.CV"], day=date(2026, 4, 21)))
+        root = create_job(db, JobType.find_repos, ScopePayload(categories=["cs.CV"], day=date(2026, 4, 21)))
         root.status = JobStatus.succeeded
         root.finished_at = utc_now()
         db.add(root)
@@ -126,7 +126,7 @@ async def test_process_job_respects_preexisting_stop_request(job_env):
     with session_scope() as db:
         job = create_job(
             db,
-            JobType.sync_links,
+            JobType.find_repos,
             ScopePayload(categories=["cs.CV"], day=date(2026, 4, 21)),
         )
         job.status = JobStatus.running

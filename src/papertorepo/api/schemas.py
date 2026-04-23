@@ -114,10 +114,10 @@ class ScopePayload(BaseModel):
 SYNC_JOB_TYPES_REQUIRING_CATEGORIES = {
     JobType.sync_arxiv,
     JobType.sync_arxiv_batch,
-    JobType.sync_links,
-    JobType.sync_links_batch,
-    JobType.enrich,
-    JobType.enrich_batch,
+    JobType.find_repos,
+    JobType.find_repos_batch,
+    JobType.refresh_metadata,
+    JobType.refresh_metadata_batch,
 }
 
 

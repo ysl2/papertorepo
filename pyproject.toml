@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "papertorepo"
 version = "0.1.0"
-description = "Shared workspace service for arXiv sync, GitHub linking, enrichment, and export"
+description = "Shared workspace service for arXiv sync, GitHub repo discovery, metadata refresh, and export"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

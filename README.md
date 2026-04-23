@@ -4,7 +4,7 @@
 
 1. syncing arXiv papers into PostgreSQL
 2. discovering linked GitHub repositories
-3. enriching repository metadata
+3. refreshing repository metadata
 4. exporting CSV snapshots
 
 The current system is intentionally simple:
@@ -36,8 +36,8 @@ Database migrations stay in the root `alembic/` directory.
 ## Runtime model
 
 - `sync-arxiv` stores arXiv results in PostgreSQL
-- `sync-links` respects TTL and only re-checks papers that are unknown, missing, expired, or forced
-- `enrich` refreshes dynamic GitHub metadata every run while preserving stable metadata once initialized
+- `find-repos` respects TTL and only re-checks papers that are unknown, missing, expired, or forced
+- `refresh-metadata` refreshes dynamic GitHub metadata every run while preserving stable metadata once initialized
 - `export` writes CSV snapshots under the runtime data directory and records them in the database
 
 The default queue is serial:
@@ -62,8 +62,8 @@ Run CLI commands against the same workspace:
 ```bash
 docker compose exec app uv run papertorepo jobs
 docker compose exec app uv run papertorepo sync-arxiv --categories cs.CV --month 2026-04
-docker compose exec app uv run papertorepo sync-links --categories cs.CV --month 2026-04
-docker compose exec app uv run papertorepo enrich --categories cs.CV --month 2026-04
+docker compose exec app uv run papertorepo find-repos --categories cs.CV --month 2026-04
+docker compose exec app uv run papertorepo refresh-metadata --categories cs.CV --month 2026-04
 docker compose exec app uv run papertorepo export --categories cs.CV --month 2026-04 --output cv-2026-04.csv
 ```
 
@@ -104,6 +104,11 @@ ARXIV_LIST_PAGE_SIZE=2000
 HUGGINGFACE_MIN_INTERVAL=0.2
 ALPHAXIV_MIN_INTERVAL=0.2
 GITHUB_MIN_INTERVAL=0.2
+FIND_REPOS_WORKER_CONCURRENCY=24
+FIND_REPOS_ARXIV_MAX_CONCURRENT=8
+FIND_REPOS_HUGGINGFACE_MAX_CONCURRENT=4
+FIND_REPOS_HUGGINGFACE_HTML_MAX_CONCURRENT=2
+FIND_REPOS_ALPHAXIV_MAX_CONCURRENT=4
 
 WORKER_POLL_SECONDS=1.0
 JOB_TIMEOUT_SECONDS=1800

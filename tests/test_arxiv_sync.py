@@ -405,7 +405,7 @@ async def test_run_sync_arxiv_historical_day_uses_submitted_date_fallback(db_env
     assert calls == [("submitted", "2025-01-10")]
 
 
-def test_dashboard_stats_and_scoped_repos_track_enriched_scope(db_env):
+def test_dashboard_stats_and_scoped_repos_track_refreshed_metadata_scope(db_env):
     _insert_scoped_paper("2504.00001", date(2025, 4, 10), categories=["cs.AI", "cs.CV"], primary_category="cs.AI")
     _insert_scoped_paper("2504.00002", date(2025, 4, 11))
     _insert_scoped_paper("2505.00003", date(2025, 5, 2))
@@ -431,8 +431,8 @@ def test_dashboard_stats_and_scoped_repos_track_enriched_scope(db_env):
             PaperRepoState(
                 arxiv_id="2504.00002",
                 stable_status=RepoStableStatus.found,
-                primary_repo_url="https://github.com/foo/not-enriched",
-                repo_urls_json=["https://github.com/foo/not-enriched"],
+                primary_repo_url="https://github.com/foo/not-refreshed",
+                repo_urls_json=["https://github.com/foo/not-refreshed"],
                 stable_decided_at=utc_now(),
                 refresh_after=utc_now(),
                 last_attempt_at=utc_now(),

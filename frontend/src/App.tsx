@@ -28,7 +28,7 @@ type JobAttemptMode = 'fresh' | 'repair'
 type LinkStatus = 'found' | 'not_found' | 'ambiguous' | 'unknown'
 type PreviewTab = 'papers' | 'jobs' | 'exports'
 type TimeMode = 'day' | 'month' | 'range'
-type StepJob = 'sync-arxiv' | 'sync-links' | 'enrich' | 'export'
+type StepJob = 'sync-arxiv' | 'find-repos' | 'refresh-metadata' | 'export'
 type ExportMode = 'all_papers' | 'papers_view'
 
 type Health = {
@@ -587,7 +587,7 @@ function summarizeStats(stats: Record<string, unknown>, emptyLabel = 'no stats y
 }
 
 function isBatchRootType(jobType: string) {
-  return jobType === 'sync_arxiv_batch' || jobType === 'sync_links_batch' || jobType === 'enrich_batch'
+  return jobType === 'sync_arxiv_batch' || jobType === 'find_repos_batch' || jobType === 'refresh_metadata_batch'
 }
 
 function isReusedChildStats(stats: Record<string, unknown>) {
@@ -661,13 +661,13 @@ function jobTypeLabel(jobType: string) {
       return 'Sync arXiv'
     case 'sync_arxiv_batch':
       return 'ArXiv range batch'
-    case 'sync_links':
+    case 'find_repos':
       return 'Find repos'
-    case 'sync_links_batch':
+    case 'find_repos_batch':
       return 'Repo lookup batch'
-    case 'enrich':
+    case 'refresh_metadata':
       return 'Refresh metadata'
-    case 'enrich_batch':
+    case 'refresh_metadata_batch':
       return 'Metadata batch'
     case 'export':
       return 'Export'
@@ -680,9 +680,9 @@ function batchFolderLabel(jobType: string) {
   switch (jobType) {
     case 'sync_arxiv_batch':
       return 'ArXiv batch folder'
-    case 'sync_links_batch':
+    case 'find_repos_batch':
       return 'Repo lookup batch folder'
-    case 'enrich_batch':
+    case 'refresh_metadata_batch':
       return 'Metadata batch folder'
     default:
       return 'Batch folder'
@@ -693,9 +693,9 @@ function stepJobLabel(stepJob: StepJob) {
   switch (stepJob) {
     case 'sync-arxiv':
       return 'Sync arXiv'
-    case 'sync-links':
+    case 'find-repos':
       return 'Find repos'
-    case 'enrich':
+    case 'refresh-metadata':
       return 'Refresh metadata'
     case 'export':
       return 'Export'
@@ -771,7 +771,7 @@ function canRerunJob(job: Job) {
     if (!isFinishedDisplayState(jobDisplayStatus(job))) return false
     return isLatestAttempt(job)
   }
-  if (job.job_type !== 'sync_arxiv' && job.job_type !== 'sync_links' && job.job_type !== 'enrich') return false
+  if (job.job_type !== 'sync_arxiv' && job.job_type !== 'find_repos' && job.job_type !== 'refresh_metadata') return false
   if (!isFinishedDisplayState(jobDisplayStatus(job))) return false
   return isLatestAttempt(job)
 }
@@ -800,8 +800,8 @@ function queueJobProgressLabel(job: Job) {
 
   switch (job.job_type) {
     case 'sync_arxiv_batch':
-    case 'sync_links_batch':
-    case 'enrich_batch':
+    case 'find_repos_batch':
+    case 'refresh_metadata_batch':
       return [batchAttemptSummary(job), childSummaryLabel(job.child_summary)]
         .filter((item) => item && item !== '—')
         .join(' · ') || 'Batch prepared'
@@ -817,7 +817,7 @@ function queueJobProgressLabel(job: Job) {
       if (ttlSkips && ttlSkips > 0) parts.push(pluralize(ttlSkips, 'TTL skip'))
       return parts.join(' · ') || (displayStatus === 'stopping' ? 'Stop requested…' : 'Starting arXiv sync…')
     }
-    case 'sync_links': {
+    case 'find_repos': {
       const considered = numericStat(job.stats_json, 'papers_considered')
       const processed = numericStat(job.stats_json, 'papers_processed')
       const found = numericStat(job.stats_json, 'found')
@@ -836,7 +836,7 @@ function queueJobProgressLabel(job: Job) {
       if (skippedFresh && skippedFresh > 0) parts.push(`${formatInteger(skippedFresh)} fresh skipped`)
       return parts.join(' · ') || (displayStatus === 'stopping' ? 'Stop requested…' : 'Starting repo lookup…')
     }
-    case 'enrich': {
+    case 'refresh_metadata': {
       const considered = numericStat(job.stats_json, 'repos_considered')
       const updated = numericStat(job.stats_json, 'updated') ?? 0
       const unchanged = numericStat(job.stats_json, 'not_modified') ?? 0
@@ -1410,7 +1410,7 @@ function App() {
   const [scope, setScope] = useState<ScopeState>(initialScopeRef.current)
   const persistedScopeRef = useRef<PersistedScopeState>(createPersistedScopeSnapshot(initialScopeRef.current))
   const [syncArxivForce, setSyncArxivForce] = useState(false)
-  const [syncLinksForce, setSyncLinksForce] = useState(false)
+  const [findReposForce, setFindReposForce] = useState(false)
   const [exportOutputName, setExportOutputName] = useState('')
   const [exportMode, setExportMode] = useState<ExportMode>('all_papers')
   const [previewTab, setPreviewTab] = useState<PreviewTab>('papers')
@@ -1497,7 +1497,7 @@ function App() {
   const filteredPaperExportReady = previewTab === 'papers' && filteredPaperIds.length > 0
 
   const runDisabledReason = useCallback(
-    (jobType: 'sync-arxiv' | 'sync-links' | 'enrich', title: string) => {
+    (jobType: 'sync-arxiv' | 'find-repos' | 'refresh-metadata', title: string) => {
       if (launchingJob === jobType) {
         return `${title} is already being queued.`
       }
@@ -2049,8 +2049,8 @@ function App() {
       payload.force = syncArxivForce
     }
 
-    if (jobType === 'sync-links') {
-      payload.force = syncLinksForce
+    if (jobType === 'find-repos') {
+      payload.force = findReposForce
     }
 
     try {
@@ -3491,13 +3491,13 @@ function App() {
           <StepCard
             index={2}
             title="Find repos"
-            detail={syncLinksForce ? 'Resolve repos in the selected publish-date scope and ignore TTL for this run.' : 'Resolve GitHub repos in the selected publish-date scope.'}
-            running={launchingJob === 'sync-links'}
+            detail={findReposForce ? 'Resolve repos in the selected publish-date scope and ignore TTL for this run.' : 'Resolve GitHub repos in the selected publish-date scope.'}
+            running={launchingJob === 'find-repos'}
             disabled={liveScope.error !== null || launchingJob !== null}
-            disabledReason={runDisabledReason('sync-links', 'Find repos')}
-            onRun={() => launchJob('sync-links')}
+            disabledReason={runDisabledReason('find-repos', 'Find repos')}
+            onRun={() => launchJob('find-repos')}
             config={
-              <ForceChip checked={syncLinksForce} label="Force link refresh" onChange={setSyncLinksForce} />
+              <ForceChip checked={findReposForce} label="Force link refresh" onChange={setFindReposForce} />
             }
           />
 
@@ -3505,10 +3505,10 @@ function App() {
             index={3}
             title="Refresh metadata"
             detail="Refresh stars and fast-changing repo metadata in the selected publish-date scope."
-            running={launchingJob === 'enrich'}
+            running={launchingJob === 'refresh-metadata'}
             disabled={liveScope.error !== null || launchingJob !== null}
-            disabledReason={runDisabledReason('enrich', 'Refresh metadata')}
-            onRun={() => launchJob('enrich')}
+            disabledReason={runDisabledReason('refresh-metadata', 'Refresh metadata')}
+            onRun={() => launchJob('refresh-metadata')}
           />
         </div>
 

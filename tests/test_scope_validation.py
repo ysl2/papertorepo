@@ -11,13 +11,13 @@ from papertorepo.db.session import session_scope
 from papertorepo.jobs.queue import create_job
 from papertorepo.db.models import JobType
 from papertorepo.api.schemas import ScopePayload
-from papertorepo.services.pipeline import run_enrich, run_sync_links
+from papertorepo.services.pipeline import run_refresh_metadata, run_find_repos
 
 
 def test_create_job_rejects_empty_categories_for_sync_jobs(db_env):
     with session_scope() as db:
         with pytest.raises(ValueError, match="categories is required for sync jobs"):
-            create_job(db, JobType.sync_links, ScopePayload())
+            create_job(db, JobType.find_repos, ScopePayload())
 
 
 def test_create_job_allows_categoryless_export(db_env):
@@ -36,7 +36,7 @@ def test_create_job_allows_categoryless_export(db_env):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("runner", [run_sync_links, run_enrich])
+@pytest.mark.parametrize("runner", [run_find_repos, run_refresh_metadata])
 async def test_sync_services_reject_empty_categories(db_env, runner):
     with session_scope() as db:
         with pytest.raises(RuntimeError, match="categories is required for sync jobs"):
@@ -47,7 +47,7 @@ def test_api_returns_422_when_sync_job_categories_are_empty(db_env):
     app = create_app()
     with TestClient(app) as client:
         response = client.post(
-            "/api/v1/jobs/sync-links",
+            "/api/v1/jobs/find-repos",
             json={
                 "categories": "",
             },
@@ -61,7 +61,7 @@ def test_api_returns_422_when_sync_job_month_is_invalid(db_env):
     app = create_app()
     with TestClient(app) as client:
         response = client.post(
-            "/api/v1/jobs/sync-links",
+            "/api/v1/jobs/find-repos",
             json={
                 "categories": "cs.CV",
                 "month": "abcd",
@@ -76,7 +76,7 @@ def test_api_returns_422_when_sync_job_categories_are_malformed(db_env):
     app = create_app()
     with TestClient(app) as client:
         response = client.post(
-            "/api/v1/jobs/sync-links",
+            "/api/v1/jobs/find-repos",
             json={
                 "categories": "computer vision",
             },
@@ -88,7 +88,7 @@ def test_api_returns_422_when_sync_job_categories_are_malformed(db_env):
 
 def test_cli_build_scope_rejects_empty_categories_for_sync_jobs(db_env):
     args = Namespace(
-        command="sync-links",
+        command="find-repos",
         categories="",
         day=None,
         month=None,
@@ -105,7 +105,7 @@ def test_cli_build_scope_rejects_empty_categories_for_sync_jobs(db_env):
 
 def test_cli_build_scope_rejects_invalid_month(db_env):
     args = Namespace(
-        command="sync-links",
+        command="find-repos",
         categories="cs.CV",
         day=None,
         month="abcd",
@@ -122,7 +122,7 @@ def test_cli_build_scope_rejects_invalid_month(db_env):
 
 def test_cli_build_scope_rejects_invalid_categories_format(db_env):
     args = Namespace(
-        command="sync-links",
+        command="find-repos",
         categories="computer vision",
         day=None,
         month=None,
@@ -139,4 +139,4 @@ def test_cli_build_scope_rejects_invalid_categories_format(db_env):
 
 def test_cli_main_exits_cleanly_for_invalid_month(db_env):
     with pytest.raises(SystemExit, match="month must be YYYY-MM"):
-        main(["sync-links", "--categories", "cs.CV", "--month", "abcd"])
+        main(["find-repos", "--categories", "cs.CV", "--month", "abcd"])

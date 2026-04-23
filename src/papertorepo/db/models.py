@@ -18,10 +18,10 @@ def utc_now() -> datetime:
 class JobType(str, enum.Enum):
     sync_arxiv = "sync_arxiv"
     sync_arxiv_batch = "sync_arxiv_batch"
-    sync_links = "sync_links"
-    sync_links_batch = "sync_links_batch"
-    enrich = "enrich"
-    enrich_batch = "enrich_batch"
+    find_repos = "find_repos"
+    find_repos_batch = "find_repos_batch"
+    refresh_metadata = "refresh_metadata"
+    refresh_metadata_batch = "refresh_metadata_batch"
     export = "export"
 
 

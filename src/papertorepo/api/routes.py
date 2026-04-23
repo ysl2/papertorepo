@@ -184,8 +184,8 @@ def register_routes(app: FastAPI) -> None:
             effective_github_min_interval_seconds=effective_github_min_interval_seconds,
             step_providers={
                 "sync_arxiv": ["arxiv_listing", "arxiv_export_api"],
-                "sync_links": ["arxiv_abs", "huggingface", "alphaxiv"],
-                "enrich": ["github_api"],
+                "find_repos": ["arxiv_abs", "huggingface", "alphaxiv"],
+                "refresh_metadata": ["github_api"],
             },
         )
 
@@ -333,13 +333,13 @@ def register_routes(app: FastAPI) -> None:
     def enqueue_sync_arxiv(scope: ScopePayload, db: Session = Depends(get_db)) -> JobLaunchRead:
         return _launch_sync_job(db, JobType.sync_arxiv, scope)
 
-    @router.post("/jobs/sync-links", response_model=JobLaunchRead)
-    def enqueue_sync_links(scope: ScopePayload, db: Session = Depends(get_db)) -> JobLaunchRead:
-        return _launch_sync_job(db, JobType.sync_links, scope)
+    @router.post("/jobs/find-repos", response_model=JobLaunchRead)
+    def enqueue_find_repos(scope: ScopePayload, db: Session = Depends(get_db)) -> JobLaunchRead:
+        return _launch_sync_job(db, JobType.find_repos, scope)
 
-    @router.post("/jobs/enrich", response_model=JobLaunchRead)
-    def enqueue_enrich(scope: ScopePayload, db: Session = Depends(get_db)) -> JobLaunchRead:
-        return _launch_sync_job(db, JobType.enrich, scope)
+    @router.post("/jobs/refresh-metadata", response_model=JobLaunchRead)
+    def enqueue_refresh_metadata(scope: ScopePayload, db: Session = Depends(get_db)) -> JobLaunchRead:
+        return _launch_sync_job(db, JobType.refresh_metadata, scope)
 
     @router.post("/jobs/export", response_model=JobRead)
     def enqueue_export(scope: ScopePayload, db: Session = Depends(get_db)) -> JobRead:

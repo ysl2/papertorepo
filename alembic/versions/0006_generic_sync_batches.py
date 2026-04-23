@@ -28,8 +28,8 @@ def upgrade() -> None:
         return
 
     if bind.dialect.name == "postgresql":
-        bind.exec_driver_sql("ALTER TYPE jobtype ADD VALUE IF NOT EXISTS 'sync_links_batch'")
-        bind.exec_driver_sql("ALTER TYPE jobtype ADD VALUE IF NOT EXISTS 'enrich_batch'")
+        bind.exec_driver_sql("ALTER TYPE jobtype ADD VALUE IF NOT EXISTS 'find_repos_batch'")
+        bind.exec_driver_sql("ALTER TYPE jobtype ADD VALUE IF NOT EXISTS 'refresh_metadata_batch'")
 
 
 def downgrade() -> None:

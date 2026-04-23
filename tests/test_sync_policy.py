@@ -10,7 +10,7 @@ from sqlalchemy import select
 from papertorepo.core.config import clear_settings_cache
 from papertorepo.db.session import session_scope
 from papertorepo.db.models import ArxivArchiveAppearance, GitHubRepo, Paper, PaperRepoState, RawFetch, RepoStableStatus, utc_now
-from papertorepo.services.pipeline import run_enrich, run_sync_links
+from papertorepo.services.pipeline import run_refresh_metadata, run_find_repos
 from tests.conftest import insert_paper
 
 
@@ -39,7 +39,7 @@ def _insert_paper(arxiv_id: str, published_at: date) -> None:
 
 
 @pytest.mark.anyio
-async def test_sync_links_skips_fresh_stable_records(db_env, monkeypatch):
+async def test_find_repos_skips_fresh_stable_records(db_env, monkeypatch):
     insert_paper()
     with session_scope() as db:
         db.add(
@@ -65,14 +65,14 @@ async def test_sync_links_skips_fresh_stable_records(db_env, monkeypatch):
     monkeypatch.setattr("papertorepo.services.pipeline.ArxivLinksClient", FailArxivClient)
 
     with session_scope() as db:
-        stats = await run_sync_links(db, {"categories": ["cs.CV"]})
+        stats = await run_find_repos(db, {"categories": ["cs.CV"]})
 
     assert stats["papers_processed"] == 0
     assert stats["papers_skipped_fresh"] == 1
 
 
 @pytest.mark.anyio
-async def test_sync_links_preserves_previous_found_state_after_incomplete_lookup(db_env, monkeypatch):
+async def test_find_repos_preserves_previous_found_state_after_incomplete_lookup(db_env, monkeypatch):
     monkeypatch.setenv("ALPHAXIV_ENABLED", "false")
     clear_settings_cache()
     insert_paper()
@@ -124,7 +124,7 @@ async def test_sync_links_preserves_previous_found_state_after_incomplete_lookup
     monkeypatch.setattr("papertorepo.services.pipeline.AlphaXivLinksClient", FakeAlphaXivClient)
 
     with session_scope() as db:
-        await run_sync_links(db, {"categories": ["cs.CV"]})
+        await run_find_repos(db, {"categories": ["cs.CV"]})
 
     with session_scope() as db:
         state = db.get(PaperRepoState, "2604.12345")
@@ -138,7 +138,7 @@ async def test_sync_links_preserves_previous_found_state_after_incomplete_lookup
 
 
 @pytest.mark.anyio
-async def test_sync_links_marks_not_found_only_after_complete_lookup(db_env, monkeypatch):
+async def test_find_repos_marks_not_found_only_after_complete_lookup(db_env, monkeypatch):
     insert_paper()
 
     class FakeArxivClient:
@@ -173,7 +173,7 @@ async def test_sync_links_marks_not_found_only_after_complete_lookup(db_env, mon
     monkeypatch.setattr("papertorepo.services.pipeline.AlphaXivLinksClient", FakeAlphaXivClient)
 
     with session_scope() as db:
-        stats = await run_sync_links(db, {"categories": ["cs.CV"]})
+        stats = await run_find_repos(db, {"categories": ["cs.CV"]})
         assert stats["not_found"] == 1
 
     with session_scope() as db:
@@ -185,7 +185,7 @@ async def test_sync_links_marks_not_found_only_after_complete_lookup(db_env, mon
 
 
 @pytest.mark.anyio
-async def test_enrich_refreshes_dynamic_fields_but_keeps_created_at(db_env, monkeypatch):
+async def test_refresh_metadata_refreshes_dynamic_fields_but_keeps_created_at(db_env, monkeypatch):
     insert_paper()
 
     with session_scope() as db:
@@ -239,7 +239,7 @@ async def test_enrich_refreshes_dynamic_fields_but_keeps_created_at(db_env, monk
     monkeypatch.setattr("papertorepo.services.pipeline.request_text", fake_request_text)
 
     with session_scope() as db:
-        stats = await run_enrich(db, {"categories": ["cs.CV"]})
+        stats = await run_refresh_metadata(db, {"categories": ["cs.CV"]})
         assert stats["updated"] == 1
 
     with session_scope() as db:
@@ -254,7 +254,7 @@ async def test_enrich_refreshes_dynamic_fields_but_keeps_created_at(db_env, monk
 
 
 @pytest.mark.anyio
-async def test_sync_links_uses_database_published_at_scope_not_archive_month(db_env, monkeypatch):
+async def test_find_repos_uses_database_published_at_scope_not_archive_month(db_env, monkeypatch):
     monkeypatch.setenv("HUGGINGFACE_ENABLED", "false")
     monkeypatch.setenv("ALPHAXIV_ENABLED", "false")
     clear_settings_cache()
@@ -284,7 +284,7 @@ async def test_sync_links_uses_database_published_at_scope_not_archive_month(db_
     monkeypatch.setattr("papertorepo.services.pipeline.ArxivLinksClient", FakeArxivClient)
 
     with session_scope() as db:
-        stats = await run_sync_links(
+        stats = await run_find_repos(
             db,
             {"categories": ["cs.CV"], "month": "2026-04"},
         )
@@ -295,7 +295,7 @@ async def test_sync_links_uses_database_published_at_scope_not_archive_month(db_
 
 
 @pytest.mark.anyio
-async def test_enrich_uses_database_published_at_scope_not_archive_month(db_env, monkeypatch):
+async def test_refresh_metadata_uses_database_published_at_scope_not_archive_month(db_env, monkeypatch):
     monkeypatch.setenv("GITHUB_TOKEN", "")
     clear_settings_cache()
     _insert_paper("2604.00002", date(2026, 4, 18))
@@ -380,7 +380,7 @@ async def test_enrich_uses_database_published_at_scope_not_archive_month(db_env,
     monkeypatch.setattr("papertorepo.services.pipeline.request_text", fake_request_text)
 
     with session_scope() as db:
-        stats = await run_enrich(
+        stats = await run_refresh_metadata(
             db,
             {"categories": ["cs.CV"], "month": "2026-04"},
         )
@@ -391,7 +391,7 @@ async def test_enrich_uses_database_published_at_scope_not_archive_month(db_env,
 
 
 @pytest.mark.anyio
-async def test_enrich_uses_github_graphql_batch_with_token(db_env, monkeypatch):
+async def test_refresh_metadata_uses_github_graphql_batch_with_token(db_env, monkeypatch):
     monkeypatch.setenv("GITHUB_TOKEN", "token-1")
     clear_settings_cache()
     insert_paper("2604.10001")
@@ -468,7 +468,7 @@ async def test_enrich_uses_github_graphql_batch_with_token(db_env, monkeypatch):
     monkeypatch.setattr("papertorepo.services.pipeline.request_text", fake_request_text)
 
     with session_scope() as db:
-        stats = await run_enrich(db, {"categories": ["cs.CV"]})
+        stats = await run_refresh_metadata(db, {"categories": ["cs.CV"]})
 
     assert stats["updated"] == 2
     assert stats["repos_completed"] == 2
@@ -498,7 +498,7 @@ async def test_enrich_uses_github_graphql_batch_with_token(db_env, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_enrich_graphql_falls_back_to_rest_for_unresolved_repo(db_env, monkeypatch):
+async def test_refresh_metadata_graphql_falls_back_to_rest_for_unresolved_repo(db_env, monkeypatch):
     monkeypatch.setenv("GITHUB_TOKEN", "token-1")
     clear_settings_cache()
     insert_paper("2604.10003")
@@ -547,7 +547,7 @@ async def test_enrich_graphql_falls_back_to_rest_for_unresolved_repo(db_env, mon
     monkeypatch.setattr("papertorepo.services.pipeline.request_text", fake_request_text)
 
     with session_scope() as db:
-        stats = await run_enrich(db, {"categories": ["cs.CV"]})
+        stats = await run_refresh_metadata(db, {"categories": ["cs.CV"]})
 
     assert stats["updated"] == 1
     assert stats["repos_completed"] == 1

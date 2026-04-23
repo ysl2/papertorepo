@@ -1,3 +1,3 @@
-from papertorepo.services.pipeline import run_enrich, run_export, run_sync_arxiv, run_sync_links
+from papertorepo.services.pipeline import run_export, run_find_repos, run_refresh_metadata, run_sync_arxiv
 
-__all__ = ["run_enrich", "run_export", "run_sync_arxiv", "run_sync_links"]
+__all__ = ["run_export", "run_find_repos", "run_refresh_metadata", "run_sync_arxiv"]

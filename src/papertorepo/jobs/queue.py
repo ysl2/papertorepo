@@ -30,10 +30,10 @@ from papertorepo.api.schemas import ChildSummary, JobRead, ScopePayload, validat
 from papertorepo.services.pipeline import (
     backfill_arxiv_archive_appearances,
     ensure_runtime_dirs,
-    run_enrich,
     run_export,
+    run_find_repos,
+    run_refresh_metadata,
     run_sync_arxiv,
-    run_sync_links,
 )
 
 
@@ -624,7 +624,7 @@ def rerun_job(db: Session, job_id: str) -> Job:
     scope = build_scope_payload(job.scope_json)
     if _job_is_batch_root(job):
         return _rerun_batch_root_job(db, job, scope)
-    if job.job_type in {JobType.sync_arxiv, JobType.sync_links, JobType.enrich}:
+    if job.job_type in {JobType.sync_arxiv, JobType.find_repos, JobType.refresh_metadata}:
         if job.parent_job_id is not None:
             return _rerun_batch_child_job(db, job, scope)
         return _rerun_direct_sync_job(db, job, scope)
@@ -808,10 +808,10 @@ async def process_job(job_id: str) -> None:
                 job.stats_json = await run_sync_arxiv(db, job.scope_json, progress=persist_progress, stop_check=stop_check)
             elif is_batch_root_job_type(job.job_type):
                 job.stats_json = await run_batch_root_job(db, job, progress=persist_progress, stop_check=stop_check)
-            elif job.job_type == JobType.sync_links:
-                job.stats_json = await run_sync_links(db, job.scope_json, progress=persist_progress, stop_check=stop_check)
-            elif job.job_type == JobType.enrich:
-                job.stats_json = await run_enrich(db, job.scope_json, progress=persist_progress, stop_check=stop_check)
+            elif job.job_type == JobType.find_repos:
+                job.stats_json = await run_find_repos(db, job.scope_json, progress=persist_progress, stop_check=stop_check)
+            elif job.job_type == JobType.refresh_metadata:
+                job.stats_json = await run_refresh_metadata(db, job.scope_json, progress=persist_progress, stop_check=stop_check)
             elif job.job_type == JobType.export:
                 job.stats_json = run_export(db, job.scope_json, stop_check=stop_check)
             else:

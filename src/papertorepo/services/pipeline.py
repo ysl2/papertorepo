@@ -186,7 +186,7 @@ def _update_runtime_stats(
     stats[throughput_key] = round((processed * 60.0 / elapsed_seconds), 2) if elapsed_seconds > 0 else 0.0
 
 
-def _new_sync_links_metrics() -> dict[str, Any]:
+def _new_find_repos_metrics() -> dict[str, Any]:
     return {
         "provider_counts": {
             "arxiv": {
@@ -218,7 +218,7 @@ def _new_sync_links_metrics() -> dict[str, Any]:
     }
 
 
-def _new_enrich_metrics() -> dict[str, Any]:
+def _new_refresh_metadata_metrics() -> dict[str, Any]:
     return {
         "provider_counts": {
             "github": {
@@ -1539,7 +1539,7 @@ async def _lookup_links_for_paper(
     task: LinkLookupTask,
     stop_check: StopCheck | None = None,
 ) -> LinkLookupResult:
-    metrics = _new_sync_links_metrics()
+    metrics = _new_find_repos_metrics()
     observations: list[dict[str, Any]] = []
     raw_fetches: dict[str, RawFetchEnvelope] = {}
     errors: list[str] = []
@@ -1653,7 +1653,7 @@ async def _lookup_links_for_paper(
     )
 
 
-async def run_sync_links(
+async def run_find_repos(
     db: Session,
     scope_json: dict[str, Any],
     *,
@@ -1666,7 +1666,7 @@ async def run_sync_links(
     papers = scoped_papers(db, scope_json)
     force = bool(scope_json.get("force"))
     due_papers = [paper for paper in papers if _link_lookup_due(paper.repo_state, force=force)]
-    metrics = _new_sync_links_metrics()
+    metrics = _new_find_repos_metrics()
     stats = {
         "papers_considered": len(papers),
         "papers_processed": 0,
@@ -1689,23 +1689,23 @@ async def run_sync_links(
         arxiv_client = ArxivLinksClient(
             session,
             min_interval=settings.arxiv_api_min_interval,
-            max_concurrent=settings.sync_links_arxiv_max_concurrent,
+            max_concurrent=settings.find_repos_arxiv_max_concurrent,
         )
         hf_client = HuggingFaceLinksClient(
             session,
             huggingface_token=settings.huggingface_token,
             min_interval=settings.huggingface_min_interval,
-            max_concurrent=settings.sync_links_huggingface_max_concurrent,
-            html_max_concurrent=settings.sync_links_huggingface_html_max_concurrent,
+            max_concurrent=settings.find_repos_huggingface_max_concurrent,
+            html_max_concurrent=settings.find_repos_huggingface_html_max_concurrent,
         )
         alphaxiv_client = AlphaXivLinksClient(
             session,
             alphaxiv_token=settings.alphaxiv_token,
             min_interval=settings.alphaxiv_min_interval,
-            max_concurrent=settings.sync_links_alphaxiv_max_concurrent,
+            max_concurrent=settings.find_repos_alphaxiv_max_concurrent,
         )
 
-        worker_count = min(max(1, settings.sync_links_worker_concurrency), len(due_papers))
+        worker_count = min(max(1, settings.find_repos_worker_concurrency), len(due_papers))
         request_queue: asyncio.Queue[LinkLookupTask | None] = asyncio.Queue()
         result_queue: asyncio.Queue[LinkLookupResult | Exception] = asyncio.Queue(maxsize=max(1, worker_count * 2))
         for paper in due_papers:
@@ -2061,7 +2061,7 @@ def _license_from_payload(payload: dict[str, Any]) -> str | None:
     return (license_info or {}).get("spdx_id") or (license_info or {}).get("name")
 
 
-async def run_enrich(
+async def run_refresh_metadata(
     db: Session,
     scope_json: dict[str, Any],
     *,
@@ -2078,7 +2078,7 @@ async def run_enrich(
             continue
         repo_urls.update(paper.repo_state.repo_urls_json or [])
 
-    metrics = _new_enrich_metrics()
+    metrics = _new_refresh_metadata_metrics()
     stats = {
         "repos_considered": len(repo_urls),
         "repos_completed": 0,

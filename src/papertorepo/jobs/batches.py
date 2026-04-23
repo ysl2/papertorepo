@@ -12,8 +12,8 @@ from papertorepo.core.scope import (
 
 BATCH_ROOT_JOB_TYPE_BY_CHILD: dict[JobType, JobType] = {
     JobType.sync_arxiv: JobType.sync_arxiv_batch,
-    JobType.sync_links: JobType.sync_links_batch,
-    JobType.enrich: JobType.enrich_batch,
+    JobType.find_repos: JobType.find_repos_batch,
+    JobType.refresh_metadata: JobType.refresh_metadata_batch,
 }
 
 BATCH_CHILD_JOB_TYPE_BY_ROOT: dict[JobType, JobType] = {
@@ -41,7 +41,7 @@ def planned_child_scope_jsons(job_type: JobType, scope_json: dict[str, Any]) -> 
     child_job_type = batch_child_job_type_for_root(job_type) or job_type
     if child_job_type == JobType.sync_arxiv:
         return expand_arxiv_child_scope_jsons(scope_json)
-    if child_job_type in {JobType.sync_links, JobType.enrich}:
+    if child_job_type in {JobType.find_repos, JobType.refresh_metadata}:
         return expand_month_priority_child_scope_jsons(scope_json)
     return []
 
@@ -49,6 +49,6 @@ def planned_child_scope_jsons(job_type: JobType, scope_json: dict[str, Any]) -> 
 def should_create_batch_root(job_type: JobType, scope_json: dict[str, Any]) -> bool:
     if job_type == JobType.sync_arxiv:
         return arxiv_scope_spans_multiple_months(scope_json)
-    if job_type in {JobType.sync_links, JobType.enrich}:
+    if job_type in {JobType.find_repos, JobType.refresh_metadata}:
         return len(planned_child_scope_jsons(job_type, scope_json)) > 1
     return False

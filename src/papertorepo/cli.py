@@ -19,7 +19,7 @@ from papertorepo.jobs.queue import init_database, rerun_job, run_worker_forever,
 from papertorepo.db.models import ExportRecord, GitHubRepo, Job, JobType
 from papertorepo.api.schemas import ExportRead, RepoRead, ScopePayload, validate_scope_for_job
 from papertorepo.core.scope import build_scope_json
-from papertorepo.services.pipeline import run_enrich, run_export, run_sync_arxiv, run_sync_links, scoped_papers
+from papertorepo.services.pipeline import run_export, run_find_repos, run_refresh_metadata, run_sync_arxiv, scoped_papers
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -39,12 +39,12 @@ def build_parser() -> argparse.ArgumentParser:
     sync_arxiv.add_argument("--max-results", type=int, default=None)
     sync_arxiv.add_argument("--force", action="store_true")
 
-    sync_links = subparsers.add_parser("sync-links")
-    _add_scope_arguments(sync_links, require_categories=True)
-    sync_links.add_argument("--force", action="store_true")
+    find_repos = subparsers.add_parser("find-repos")
+    _add_scope_arguments(find_repos, require_categories=True)
+    find_repos.add_argument("--force", action="store_true")
 
-    enrich = subparsers.add_parser("enrich")
-    _add_scope_arguments(enrich, require_categories=True)
+    refresh_metadata = subparsers.add_parser("refresh-metadata")
+    _add_scope_arguments(refresh_metadata, require_categories=True)
 
     export = subparsers.add_parser("export")
     _add_scope_arguments(export)
@@ -107,8 +107,8 @@ def _build_scope(args: argparse.Namespace) -> dict[str, Any]:
         )
         job_type = {
             "sync-arxiv": JobType.sync_arxiv,
-            "sync-links": JobType.sync_links,
-            "enrich": JobType.enrich,
+            "find-repos": JobType.find_repos,
+            "refresh-metadata": JobType.refresh_metadata,
             "export": JobType.export,
         }.get(getattr(args, "command", ""))
         if job_type is not None:
@@ -164,14 +164,14 @@ async def async_main_from_args(args: argparse.Namespace) -> int:
             _print_json(await run_sync_arxiv(db, _build_scope_or_exit(args)))
         return 0
 
-    if args.command == "sync-links":
+    if args.command == "find-repos":
         with session_scope() as db:
-            _print_json(await run_sync_links(db, _build_scope_or_exit(args)))
+            _print_json(await run_find_repos(db, _build_scope_or_exit(args)))
         return 0
 
-    if args.command == "enrich":
+    if args.command == "refresh-metadata":
         with session_scope() as db:
-            _print_json(await run_enrich(db, _build_scope_or_exit(args)))
+            _print_json(await run_refresh_metadata(db, _build_scope_or_exit(args)))
         return 0
 
     if args.command == "export":

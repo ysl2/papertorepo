@@ -36,11 +36,11 @@ class Settings(BaseSettings):
     huggingface_min_interval: float = 0.2
     alphaxiv_min_interval: float = 0.2
     github_min_interval: float = 0.2
-    sync_links_worker_concurrency: int = 24
-    sync_links_arxiv_max_concurrent: int = 8
-    sync_links_huggingface_max_concurrent: int = 4
-    sync_links_huggingface_html_max_concurrent: int = 2
-    sync_links_alphaxiv_max_concurrent: int = 4
+    find_repos_worker_concurrency: int = 24
+    find_repos_arxiv_max_concurrent: int = 8
+    find_repos_huggingface_max_concurrent: int = 4
+    find_repos_huggingface_html_max_concurrent: int = 2
+    find_repos_alphaxiv_max_concurrent: int = 4
     github_graphql_batch_size: int = 50
     github_rest_fallback_max_concurrent: int = 2
 

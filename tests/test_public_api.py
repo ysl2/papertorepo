@@ -166,8 +166,8 @@ def test_health_reports_serial_queue_runtime_metadata(db_env, monkeypatch):
     assert payload["github_auth_configured"] is False
     assert payload["effective_github_min_interval_seconds"] == 60.0
     assert payload["step_providers"]["sync_arxiv"] == ["arxiv_listing", "arxiv_export_api"]
-    assert payload["step_providers"]["sync_links"] == ["arxiv_abs", "huggingface", "alphaxiv"]
-    assert payload["step_providers"]["enrich"] == ["github_api"]
+    assert payload["step_providers"]["find_repos"] == ["arxiv_abs", "huggingface", "alphaxiv"]
+    assert payload["step_providers"]["refresh_metadata"] == ["github_api"]
 
     clear_settings_cache()
 
@@ -178,8 +178,8 @@ def test_public_dashboard_returns_job_queue_summary(db_env):
     from papertorepo.api.schemas import ScopePayload
 
     with session_scope() as db:
-        queued_job = create_job(db, JobType.enrich, ScopePayload(categories=["cs.CV"], day=date(2026, 4, 21)))
-        running_job = create_job(db, JobType.sync_links, ScopePayload(categories=["cs.CV"], day=date(2026, 4, 21)))
+        queued_job = create_job(db, JobType.refresh_metadata, ScopePayload(categories=["cs.CV"], day=date(2026, 4, 21)))
+        running_job = create_job(db, JobType.find_repos, ScopePayload(categories=["cs.CV"], day=date(2026, 4, 21)))
         running_job.status = JobStatus.running
         running_job.started_at = utc_now()
         running_job.locked_at = utc_now()
@@ -196,9 +196,9 @@ def test_public_dashboard_returns_job_queue_summary(db_env):
     assert payload["job_queue_summary"]["pending"] == 1
     assert payload["job_queue_summary"]["stopping"] == 0
     assert payload["job_queue_summary"]["current_job"]["id"] == running_job.id
-    assert payload["job_queue_summary"]["current_job"]["job_type"] == "sync_links"
+    assert payload["job_queue_summary"]["current_job"]["job_type"] == "find_repos"
     assert payload["job_queue_summary"]["next_job"]["id"] == queued_job.id
-    assert payload["job_queue_summary"]["next_job"]["job_type"] == "enrich"
+    assert payload["job_queue_summary"]["next_job"]["job_type"] == "refresh_metadata"
 
 
 @pytest.mark.parametrize(

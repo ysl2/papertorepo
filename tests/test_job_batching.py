@@ -57,9 +57,9 @@ def test_expand_arxiv_child_scope_jsons_inherit_force_flag():
     assert all(child_scope["force"] is True for child_scope in child_scopes)
 
 
-def test_planned_child_scope_jsons_keep_partial_edges_contiguous_for_sync_links():
+def test_planned_child_scope_jsons_keep_partial_edges_contiguous_for_find_repos():
     child_scopes = planned_child_scope_jsons(
-        JobType.sync_links,
+        JobType.find_repos,
         {
             "categories": ["cs.CV"],
             "from": "2025-03-15",
@@ -130,14 +130,14 @@ def test_create_sync_job_uses_batch_for_multi_window_link_scope(db_env):
     with session_scope() as db:
         job = create_sync_job(
             db,
-            JobType.sync_links,
+            JobType.find_repos,
             ScopePayload(
                 categories=["cs.CV"],
                 **{"from": date(2025, 3, 15), "to": date(2025, 6, 10)},
             ),
         )
 
-    assert job.job_type == JobType.sync_links_batch
+    assert job.job_type == JobType.find_repos_batch
     assert job.parent_job_id is None
 
 
@@ -145,14 +145,14 @@ def test_create_sync_job_canonicalizes_single_day_range_to_day(db_env):
     with session_scope() as db:
         job = create_sync_job(
             db,
-            JobType.sync_links,
+            JobType.find_repos,
             ScopePayload(
                 categories=["cs.CV"],
                 **{"from": date(2025, 4, 12), "to": date(2025, 4, 12)},
             ),
         )
 
-    assert job.job_type == JobType.sync_links
+    assert job.job_type == JobType.find_repos
     assert job.scope_json["day"] == "2025-04-12"
     assert job.scope_json["month"] is None
     assert job.scope_json["from"] is None
@@ -163,14 +163,14 @@ def test_create_sync_job_canonicalizes_full_month_range_to_month(db_env):
     with session_scope() as db:
         job = create_sync_job(
             db,
-            JobType.sync_links,
+            JobType.find_repos,
             ScopePayload(
                 categories=["cs.CV"],
                 **{"from": date(2025, 4, 1), "to": date(2025, 4, 30)},
             ),
         )
 
-    assert job.job_type == JobType.sync_links
+    assert job.job_type == JobType.find_repos
     assert job.scope_json["day"] is None
     assert job.scope_json["month"] == "2025-04"
     assert job.scope_json["from"] is None
@@ -456,7 +456,7 @@ def test_list_jobs_root_only_excludes_child_jobs(db_env):
         )
         create_job(
             db,
-            JobType.sync_links,
+            JobType.find_repos,
             ScopePayload(categories=["cs.CV"], month="2025-03"),
         )
 
