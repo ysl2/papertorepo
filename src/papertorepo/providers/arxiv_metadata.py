@@ -25,12 +25,12 @@ class ArxivMetadataClient:
         *,
         min_interval: float = 0.2,
         max_concurrent: int = 1,
-        max_retries: int = 5,
+        max_retries: int | None = None,
     ):
         self.session = session
         self.semaphore = asyncio.Semaphore(max(1, max_concurrent))
         self.rate_limiter = RateLimiter(max(0.0, min_interval))
-        self.max_retries = max(0, max_retries)
+        self.max_retries = None if max_retries is None else max(0, max_retries)
 
     async def fetch_search_page(
         self,

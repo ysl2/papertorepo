@@ -4,14 +4,14 @@ from typing import Any
 
 from papertorepo.db.models import JobType
 from papertorepo.core.scope import (
-    arxiv_scope_spans_multiple_months,
-    expand_arxiv_child_scope_jsons,
     expand_month_priority_child_scope_jsons,
+    expand_sync_papers_child_scope_jsons,
+    sync_papers_scope_spans_multiple_months,
 )
 
 
 BATCH_ROOT_JOB_TYPE_BY_CHILD: dict[JobType, JobType] = {
-    JobType.sync_arxiv: JobType.sync_arxiv_batch,
+    JobType.sync_papers: JobType.sync_papers_batch,
     JobType.find_repos: JobType.find_repos_batch,
     JobType.refresh_metadata: JobType.refresh_metadata_batch,
 }
@@ -39,16 +39,16 @@ def is_batch_root_job(job_type: JobType, parent_job_id: str | None) -> bool:
 
 def planned_child_scope_jsons(job_type: JobType, scope_json: dict[str, Any]) -> list[dict[str, Any]]:
     child_job_type = batch_child_job_type_for_root(job_type) or job_type
-    if child_job_type == JobType.sync_arxiv:
-        return expand_arxiv_child_scope_jsons(scope_json)
+    if child_job_type == JobType.sync_papers:
+        return expand_sync_papers_child_scope_jsons(scope_json)
     if child_job_type in {JobType.find_repos, JobType.refresh_metadata}:
         return expand_month_priority_child_scope_jsons(scope_json)
     return []
 
 
 def should_create_batch_root(job_type: JobType, scope_json: dict[str, Any]) -> bool:
-    if job_type == JobType.sync_arxiv:
-        return arxiv_scope_spans_multiple_months(scope_json)
+    if job_type == JobType.sync_papers:
+        return sync_papers_scope_spans_multiple_months(scope_json)
     if job_type in {JobType.find_repos, JobType.refresh_metadata}:
         return len(planned_child_scope_jsons(job_type, scope_json)) > 1
     return False

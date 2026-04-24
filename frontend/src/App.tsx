@@ -28,7 +28,7 @@ type JobAttemptMode = 'fresh' | 'repair'
 type LinkStatus = 'found' | 'not_found' | 'ambiguous' | 'unknown'
 type PreviewTab = 'papers' | 'jobs' | 'exports'
 type TimeMode = 'day' | 'month' | 'range'
-type StepJob = 'sync-arxiv' | 'find-repos' | 'refresh-metadata' | 'export'
+type StepJob = 'sync-papers' | 'find-repos' | 'refresh-metadata' | 'export'
 type ExportMode = 'all_papers' | 'papers_view'
 
 type Health = {
@@ -587,7 +587,7 @@ function summarizeStats(stats: Record<string, unknown>, emptyLabel = 'no stats y
 }
 
 function isBatchRootType(jobType: string) {
-  return jobType === 'sync_arxiv_batch' || jobType === 'find_repos_batch' || jobType === 'refresh_metadata_batch'
+  return jobType === 'sync_papers_batch' || jobType === 'find_repos_batch' || jobType === 'refresh_metadata_batch'
 }
 
 function isReusedChildStats(stats: Record<string, unknown>) {
@@ -657,10 +657,10 @@ function isLatestAttempt(job: Pick<Job, 'attempt_rank'>) {
 
 function jobTypeLabel(jobType: string) {
   switch (jobType) {
-    case 'sync_arxiv':
-      return 'Sync arXiv'
-    case 'sync_arxiv_batch':
-      return 'ArXiv range batch'
+    case 'sync_papers':
+      return 'Sync papers'
+    case 'sync_papers_batch':
+      return 'Paper sync batch'
     case 'find_repos':
       return 'Find repos'
     case 'find_repos_batch':
@@ -678,8 +678,8 @@ function jobTypeLabel(jobType: string) {
 
 function batchFolderLabel(jobType: string) {
   switch (jobType) {
-    case 'sync_arxiv_batch':
-      return 'ArXiv batch folder'
+    case 'sync_papers_batch':
+      return 'Paper sync batch folder'
     case 'find_repos_batch':
       return 'Repo lookup batch folder'
     case 'refresh_metadata_batch':
@@ -691,8 +691,8 @@ function batchFolderLabel(jobType: string) {
 
 function stepJobLabel(stepJob: StepJob) {
   switch (stepJob) {
-    case 'sync-arxiv':
-      return 'Sync arXiv'
+    case 'sync-papers':
+      return 'Sync papers'
     case 'find-repos':
       return 'Find repos'
     case 'refresh-metadata':
@@ -771,7 +771,7 @@ function canRerunJob(job: Job) {
     if (!isFinishedDisplayState(jobDisplayStatus(job))) return false
     return isLatestAttempt(job)
   }
-  if (job.job_type !== 'sync_arxiv' && job.job_type !== 'find_repos' && job.job_type !== 'refresh_metadata') return false
+  if (job.job_type !== 'sync_papers' && job.job_type !== 'find_repos' && job.job_type !== 'refresh_metadata') return false
   if (!isFinishedDisplayState(jobDisplayStatus(job))) return false
   return isLatestAttempt(job)
 }
@@ -799,13 +799,13 @@ function queueJobProgressLabel(job: Job) {
   if (job.error_text && displayStatus !== 'stopping') return job.error_text
 
   switch (job.job_type) {
-    case 'sync_arxiv_batch':
+    case 'sync_papers_batch':
     case 'find_repos_batch':
     case 'refresh_metadata_batch':
       return [batchAttemptSummary(job), childSummaryLabel(job.child_summary)]
         .filter((item) => item && item !== '—')
         .join(' · ') || 'Batch prepared'
-    case 'sync_arxiv': {
+    case 'sync_papers': {
       const papersSaved = numericStat(job.stats_json, 'papers_upserted')
       const listingPages = numericStat(job.stats_json, 'listing_pages_fetched')
       const metadataBatches = numericStat(job.stats_json, 'metadata_batches_fetched')
@@ -815,7 +815,7 @@ function queueJobProgressLabel(job: Job) {
       if (listingPages && listingPages > 0) parts.push(pluralize(listingPages, 'listing page'))
       if (metadataBatches && metadataBatches > 0) parts.push(pluralize(metadataBatches, 'metadata batch'))
       if (ttlSkips && ttlSkips > 0) parts.push(pluralize(ttlSkips, 'TTL skip'))
-      return parts.join(' · ') || (displayStatus === 'stopping' ? 'Stop requested…' : 'Starting arXiv sync…')
+      return parts.join(' · ') || (displayStatus === 'stopping' ? 'Stop requested…' : 'Starting paper sync…')
     }
     case 'find_repos': {
       const considered = numericStat(job.stats_json, 'papers_considered')
@@ -1409,7 +1409,7 @@ function App() {
   }
   const [scope, setScope] = useState<ScopeState>(initialScopeRef.current)
   const persistedScopeRef = useRef<PersistedScopeState>(createPersistedScopeSnapshot(initialScopeRef.current))
-  const [syncArxivForce, setSyncArxivForce] = useState(false)
+  const [syncPapersForce, setSyncPapersForce] = useState(false)
   const [findReposForce, setFindReposForce] = useState(false)
   const [exportOutputName, setExportOutputName] = useState('')
   const [exportMode, setExportMode] = useState<ExportMode>('all_papers')
@@ -1497,7 +1497,7 @@ function App() {
   const filteredPaperExportReady = previewTab === 'papers' && filteredPaperIds.length > 0
 
   const runDisabledReason = useCallback(
-    (jobType: 'sync-arxiv' | 'find-repos' | 'refresh-metadata', title: string) => {
+    (jobType: 'sync-papers' | 'find-repos' | 'refresh-metadata', title: string) => {
       if (launchingJob === jobType) {
         return `${title} is already being queued.`
       }
@@ -2045,8 +2045,8 @@ function App() {
       payload.to = liveScope.payload.to
     }
 
-    if (jobType === 'sync-arxiv') {
-      payload.force = syncArxivForce
+    if (jobType === 'sync-papers') {
+      payload.force = syncPapersForce
     }
 
     if (jobType === 'find-repos') {
@@ -3393,7 +3393,7 @@ function App() {
         <div className="section-copy">
           <p className="panel-kicker">Job scope</p>
           <h2>Set task parameters</h2>
-          <p className="scope-hint">These parameters define new task scope. Sync arXiv uses archive coverage; later steps use each paper&apos;s stored publish date. Narrow the table separately with its own filters.</p>
+          <p className="scope-hint">These parameters define new task scope. Sync papers uses archive coverage; later steps use each paper&apos;s stored publish date. Narrow the table separately with its own filters.</p>
         </div>
 
         <div className="scope-controls">
@@ -3477,14 +3477,14 @@ function App() {
         <div className="pipeline-grid">
           <StepCard
             index={1}
-            title="Sync arXiv"
-            detail={syncArxivForce ? 'Pull arXiv archive results and ignore TTL for this run.' : 'Pull arXiv archive results into the database.'}
-            running={launchingJob === 'sync-arxiv'}
+            title="Sync papers"
+            detail={syncPapersForce ? 'Pull arXiv archive results and ignore TTL for this run.' : 'Pull arXiv archive results into the database.'}
+            running={launchingJob === 'sync-papers'}
             disabled={liveScope.error !== null || launchingJob !== null}
-            disabledReason={runDisabledReason('sync-arxiv', 'Sync arXiv')}
-            onRun={() => launchJob('sync-arxiv')}
+            disabledReason={runDisabledReason('sync-papers', 'Sync papers')}
+            onRun={() => launchJob('sync-papers')}
             config={
-              <ForceChip checked={syncArxivForce} label="Force arXiv refresh" onChange={setSyncArxivForce} />
+              <ForceChip checked={syncPapersForce} label="Force paper refresh" onChange={setSyncPapersForce} />
             }
           />
 

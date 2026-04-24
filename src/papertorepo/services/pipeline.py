@@ -20,32 +20,27 @@ from sqlalchemy.orm import Session, selectinload
 
 from papertorepo.core.records import Paper as ParsedPaper
 from papertorepo.core.http import RateLimiter, build_timeout, request_text
-from papertorepo.core.normalize.arxiv import build_arxiv_abs_url, extract_arxiv_id
-from papertorepo.core.normalize.github import extract_owner_repo
+from papertorepo.core.normalize.arxiv import extract_arxiv_id
+from papertorepo.core.normalize.github import extract_github_repo_urls, extract_owner_repo
 from papertorepo.providers.alphaxiv_links import (
     AlphaXivLinksClient,
     extract_github_url_from_alphaxiv_html,
     extract_github_url_from_alphaxiv_payload,
 )
-from papertorepo.providers.arxiv_links import (
-    ArxivLinksClient,
-    extract_github_urls_from_abs_html,
-    extract_github_urls_from_comment,
-)
 from papertorepo.providers.arxiv_metadata import ArxivMetadataClient, parse_papers_from_feed
 from papertorepo.providers.arxiv_metadata import parse_arxiv_ids_from_feed
 from papertorepo.providers.huggingface_links import (
     HuggingFaceLinksClient,
-    extract_github_url_from_hf_html,
     extract_github_url_from_hf_payload,
 )
+from papertorepo.providers.github import REFRESH_METADATA_GITHUB_ANONYMOUS_REST_MIN_INTERVAL_SECONDS
 from papertorepo.storage.raw_fetch_store import RawCacheStore
 from papertorepo.core.config import get_settings
 from papertorepo.jobs.batches import is_batch_root_job
 from papertorepo.jobs.ordering import job_execution_order_by
 from papertorepo.db.models import (
-    ArxivArchiveAppearance,
-    ArxivSyncDay,
+    SyncPapersArxivArchiveAppearance,
+    SyncPapersArxivDay,
     ExportRecord,
     GitHubRepo,
     Job,
@@ -69,9 +64,11 @@ from papertorepo.core.scope import (
 )
 
 
-LINK_TTL = timedelta(days=7)
-ARXIV_CATCHUP_MAX_AGE_DAYS = 90
-ARXIV_LIST_ABS_LINK_PATTERN = re.compile(r'href\s*=\s*"/abs/([^"#?]+)"', re.IGNORECASE)
+SYNC_PAPERS_ARXIV_CATCHUP_MAX_AGE_DAYS = 90
+SYNC_PAPERS_ARXIV_MAX_CONCURRENT = 1
+SYNC_PAPERS_ARXIV_LIST_ABS_LINK_PATTERN = re.compile(r'href\s*=\s*"/abs/([^"#?]+)"', re.IGNORECASE)
+REFRESH_METADATA_GITHUB_GRAPHQL_MAX_CONCURRENT = 1
+REFRESH_METADATA_GITHUB_GRAPHQL_TOPICS_FIRST = 20
 ProgressCallback = Callable[[dict[str, Any]], None]
 StopCheck = Callable[[], None]
 
@@ -91,6 +88,7 @@ class RawFetchEnvelope:
 class LinkLookupTask:
     arxiv_id: str
     comment: str | None
+    abstract: str | None
 
 
 @dataclass(slots=True)
@@ -104,7 +102,7 @@ class LinkLookupResult:
 
 
 @dataclass(frozen=True, slots=True)
-class ArxivSyncUnit:
+class SyncPapersArxivUnit:
     category: str
     transport: str
     requested_start_date: date
@@ -191,14 +189,11 @@ def _new_find_repos_metrics() -> dict[str, Any]:
         "provider_counts": {
             "arxiv": {
                 "comment_matches": 0,
-                "abs_requests": 0,
-                "abs_failures": 0,
+                "abstract_matches": 0,
             },
             "huggingface": {
                 "api_requests": 0,
                 "api_failures": 0,
-                "html_requests": 0,
-                "html_failures": 0,
             },
             "alphaxiv": {
                 "api_requests": 0,
@@ -208,9 +203,7 @@ def _new_find_repos_metrics() -> dict[str, Any]:
             },
         },
         "stage_seconds": {
-            "arxiv_abs": 0.0,
             "huggingface_api": 0.0,
-            "huggingface_html": 0.0,
             "alphaxiv_api": 0.0,
             "alphaxiv_html": 0.0,
             "persist": 0.0,
@@ -245,6 +238,12 @@ def _required_scope_categories(scope_json: dict[str, Any]) -> list[str]:
     return categories
 
 
+def _required_scope_window(scope_json: dict[str, Any]) -> None:
+    window = resolve_window_from_scope_json(scope_json)
+    if window.start_date is None or window.end_date is None:
+        raise RuntimeError("time window is required for sync jobs")
+
+
 def _archive_month_bounds(archive_month: date) -> tuple[date, date]:
     start_date = month_start(archive_month)
     end_date = date.fromordinal(_next_month_start(start_date).toordinal() - 1)
@@ -267,7 +266,7 @@ def _ttl_completed_days(start_date: date, end_date: date) -> list[date]:
 
 
 def _sync_day_last_completed_at(db: Session, *, category: str, sync_day: date) -> datetime | None:
-    record = db.get(ArxivSyncDay, {"category": category, "sync_day": sync_day})
+    record = db.get(SyncPapersArxivDay, {"category": category, "sync_day": sync_day})
     return _coerce_utc(record.last_completed_at) if record is not None else None
 
 
@@ -275,7 +274,7 @@ def _sync_day_is_stale(db: Session, *, category: str, sync_day: date) -> bool:
     last_completed_at = _sync_day_last_completed_at(db, category=category, sync_day=sync_day)
     if last_completed_at is None:
         return True
-    ttl_days = max(1, get_settings().arxiv_sync_ttl_days)
+    ttl_days = max(1, get_settings().sync_papers_arxiv_ttl_days)
     return last_completed_at + timedelta(days=ttl_days) <= _now_utc()
 
 
@@ -307,9 +306,9 @@ def _record_arxiv_days_completed(
         return
     completed_at = _now_utc()
     for sync_day in sync_days:
-        record = db.get(ArxivSyncDay, {"category": category, "sync_day": sync_day})
+        record = db.get(SyncPapersArxivDay, {"category": category, "sync_day": sync_day})
         if record is None:
-            record = ArxivSyncDay(category=category, sync_day=sync_day)
+            record = SyncPapersArxivDay(category=category, sync_day=sync_day)
             db.add(record)
         record.last_completed_at = completed_at
 
@@ -628,6 +627,7 @@ def _apply_repo_state(
 ) -> PaperRepoState:
     state = paper.repo_state or PaperRepoState(arxiv_id=paper.arxiv_id)
     now = utc_now()
+    link_ttl = timedelta(days=max(1, get_settings().find_repos_link_ttl_days))
 
     previous_status = state.stable_status
     previous_primary = state.primary_repo_url
@@ -640,13 +640,13 @@ def _apply_repo_state(
         state.primary_repo_url = final_urls[0]
         state.repo_urls_json = final_urls
         state.stable_decided_at = now
-        state.refresh_after = now + LINK_TTL
+        state.refresh_after = now + link_ttl
     elif complete:
         state.stable_status = RepoStableStatus.not_found
         state.primary_repo_url = None
         state.repo_urls_json = []
         state.stable_decided_at = now
-        state.refresh_after = now + LINK_TTL
+        state.refresh_after = now + link_ttl
     elif previous_status in {RepoStableStatus.found, RepoStableStatus.not_found, RepoStableStatus.ambiguous}:
         state.stable_status = previous_status
         state.primary_repo_url = previous_primary
@@ -691,7 +691,7 @@ def _extract_arxiv_ids_from_listing_html(html_text: str) -> list[str]:
         return []
     arxiv_ids: list[str] = []
     seen: set[str] = set()
-    for raw in ARXIV_LIST_ABS_LINK_PATTERN.findall(html_text):
+    for raw in SYNC_PAPERS_ARXIV_LIST_ABS_LINK_PATTERN.findall(html_text):
         arxiv_id = extract_arxiv_id(f"https://arxiv.org/abs/{raw.strip()}") or raw.strip().split("v", 1)[0]
         if not arxiv_id or arxiv_id in seen:
             continue
@@ -701,11 +701,11 @@ def _extract_arxiv_ids_from_listing_html(html_text: str) -> list[str]:
 
 
 def _batch_arxiv_ids(arxiv_ids: list[str]) -> list[list[str]]:
-    batch_size = max(1, get_settings().arxiv_id_batch_size)
+    batch_size = max(1, get_settings().sync_papers_arxiv_id_batch_size)
     return [arxiv_ids[index : index + batch_size] for index in range(0, len(arxiv_ids), batch_size)]
 
 
-def _record_arxiv_archive_appearances(
+def _record_sync_papers_arxiv_archive_appearances(
     db: Session,
     *,
     category: str,
@@ -716,10 +716,10 @@ def _record_arxiv_archive_appearances(
         return 0
     existing = set(
         db.scalars(
-            select(ArxivArchiveAppearance.arxiv_id).where(
-                ArxivArchiveAppearance.category == category,
-                ArxivArchiveAppearance.archive_month == archive_month,
-                ArxivArchiveAppearance.arxiv_id.in_(arxiv_ids),
+            select(SyncPapersArxivArchiveAppearance.arxiv_id).where(
+                SyncPapersArxivArchiveAppearance.category == category,
+                SyncPapersArxivArchiveAppearance.archive_month == archive_month,
+                SyncPapersArxivArchiveAppearance.arxiv_id.in_(arxiv_ids),
             )
         ).all()
     )
@@ -728,7 +728,7 @@ def _record_arxiv_archive_appearances(
         if arxiv_id in existing:
             continue
         db.add(
-            ArxivArchiveAppearance(
+            SyncPapersArxivArchiveAppearance(
                 arxiv_id=arxiv_id,
                 category=category,
                 archive_month=archive_month,
@@ -750,12 +750,12 @@ def _parse_listing_request_key(request_key: str) -> tuple[str, date] | None:
     return category, archive_month
 
 
-def backfill_arxiv_archive_appearances(db: Session) -> dict[str, int]:
+def backfill_sync_papers_arxiv_archive_appearances(db: Session) -> dict[str, int]:
     if not try_advisory_lock(db, "arxiv:archive-appearance-backfill"):
         return {"listing_fetches": 0, "appearances_created": 0, "skipped_locked": 1}
 
     try:
-        existing_count = db.scalar(select(func.count()).select_from(ArxivArchiveAppearance)) or 0
+        existing_count = db.scalar(select(func.count()).select_from(SyncPapersArxivArchiveAppearance)) or 0
         if existing_count > 0:
             return {"listing_fetches": 0, "appearances_created": 0, "skipped_existing": int(existing_count)}
 
@@ -783,7 +783,7 @@ def backfill_arxiv_archive_appearances(db: Session) -> dict[str, int]:
             if not arxiv_ids:
                 continue
             existing_ids = list(db.scalars(select(Paper.arxiv_id).where(Paper.arxiv_id.in_(arxiv_ids))).all())
-            appearances_created += _record_arxiv_archive_appearances(
+            appearances_created += _record_sync_papers_arxiv_archive_appearances(
                 db,
                 category=category,
                 archive_month=archive_month,
@@ -799,7 +799,7 @@ def backfill_arxiv_archive_appearances(db: Session) -> dict[str, int]:
         release_advisory_lock(db, "arxiv:archive-appearance-backfill")
 
 
-async def _sync_arxiv_archive_month(
+async def _sync_papers_archive_month(
     db: Session,
     client: ArxivMetadataClient,
     *,
@@ -810,7 +810,7 @@ async def _sync_arxiv_archive_month(
     stop_check: StopCheck | None = None,
 ) -> None:
     period = month_label(archive_month)
-    page_size = max(1, get_settings().arxiv_list_page_size)
+    page_size = max(1, get_settings().sync_papers_arxiv_list_page_size)
     skip = 0
     while True:
         _run_stop_check(stop_check)
@@ -860,10 +860,10 @@ async def _sync_arxiv_archive_month(
 
 def _day_uses_catchup(sync_day: date) -> bool:
     today = _today_utc()
-    return sync_day < today and (today - sync_day).days <= ARXIV_CATCHUP_MAX_AGE_DAYS
+    return sync_day < today and (today - sync_day).days <= SYNC_PAPERS_ARXIV_CATCHUP_MAX_AGE_DAYS
 
 
-def _ttl_days_for_unit(unit: ArxivSyncUnit) -> list[date]:
+def _ttl_days_for_unit(unit: SyncPapersArxivUnit) -> list[date]:
     if unit.fetch_day is not None:
         return _ttl_completed_days(unit.fetch_day, unit.fetch_day)
     if unit.fetch_month is not None:
@@ -872,21 +872,21 @@ def _ttl_days_for_unit(unit: ArxivSyncUnit) -> list[date]:
     return []
 
 
-def _arxiv_lock_key_for_unit(unit: ArxivSyncUnit) -> str:
+def _arxiv_lock_key_for_unit(unit: SyncPapersArxivUnit) -> str:
     if unit.fetch_day is not None:
         return f"arxiv:{unit.category}:{unit.transport}:{unit.fetch_day.isoformat()}"
     assert unit.fetch_month is not None
     return f"arxiv:{unit.category}:{unit.transport}:{month_label(unit.fetch_month)}"
 
 
-def _plan_arxiv_sync_units(scope_json: dict[str, Any], categories: list[str]) -> list[ArxivSyncUnit]:
+def _plan_sync_papers_arxiv_units(scope_json: dict[str, Any], categories: list[str]) -> list[SyncPapersArxivUnit]:
     scope = build_scope_payload(scope_json)
-    units: list[ArxivSyncUnit] = []
+    units: list[SyncPapersArxivUnit] = []
     if scope.day is not None:
         transport = "catchup_day" if _day_uses_catchup(scope.day) else "submitted_day"
         for category in categories:
             units.append(
-                ArxivSyncUnit(
+                SyncPapersArxivUnit(
                     category=category,
                     transport=transport,
                     requested_start_date=scope.day,
@@ -902,7 +902,7 @@ def _plan_arxiv_sync_units(scope_json: dict[str, Any], categories: list[str]) ->
         start_date, end_date = _archive_month_bounds(archive_month)
         for category in categories:
             units.append(
-                ArxivSyncUnit(
+                SyncPapersArxivUnit(
                     category=category,
                     transport="list_month",
                     requested_start_date=start_date,
@@ -917,7 +917,7 @@ def _plan_arxiv_sync_units(scope_json: dict[str, Any], categories: list[str]) ->
             for archive_month in resolve_archive_months_from_scope_json(scope_json):
                 month_start_date, month_end_date = _archive_month_bounds(archive_month)
                 units.append(
-                    ArxivSyncUnit(
+                    SyncPapersArxivUnit(
                         category=category,
                         transport="list_month",
                         requested_start_date=max(scope.from_date, month_start_date),
@@ -969,7 +969,7 @@ async def _hydrate_arxiv_ids(
         for paper in papers:
             upsert_paper(db, paper)
         if archive_month is not None:
-            _record_arxiv_archive_appearances(
+            _record_sync_papers_arxiv_archive_appearances(
                 db,
                 category=category,
                 archive_month=archive_month,
@@ -981,7 +981,7 @@ async def _hydrate_arxiv_ids(
         _emit_progress(progress, stats)
 
 
-async def _sync_arxiv_catchup_day(
+async def _sync_papers_catchup_day(
     db: Session,
     client: ArxivMetadataClient,
     *,
@@ -1028,7 +1028,7 @@ async def _sync_arxiv_catchup_day(
     )
 
 
-async def _sync_arxiv_submitted_day(
+async def _sync_papers_submitted_day(
     db: Session,
     client: ArxivMetadataClient,
     *,
@@ -1038,7 +1038,7 @@ async def _sync_arxiv_submitted_day(
     progress: ProgressCallback | None = None,
     stop_check: StopCheck | None = None,
 ) -> None:
-    page_size = max(1, get_settings().arxiv_list_page_size)
+    page_size = max(1, get_settings().sync_papers_arxiv_list_page_size)
     start = 0
     while True:
         _run_stop_check(stop_check)
@@ -1086,7 +1086,7 @@ async def _sync_arxiv_submitted_day(
         start += page_size
 
 
-async def run_sync_arxiv(
+async def run_sync_papers(
     db: Session,
     scope_json: dict[str, Any],
     *,
@@ -1097,8 +1097,8 @@ async def run_sync_arxiv(
     settings = get_settings()
     started_at = time.perf_counter()
     categories = _required_scope_categories(scope_json)
+    _required_scope_window(scope_json)
     force = bool(scope_json.get("force"))
-    max_results = int(scope_json.get("max_results") or 100)
     stats = {
         "categories": len(categories),
         "papers_upserted": 0,
@@ -1131,60 +1131,11 @@ async def run_sync_arxiv(
     async with aiohttp.ClientSession(timeout=build_timeout()) as session:
         client = ArxivMetadataClient(
             session,
-            min_interval=settings.arxiv_api_min_interval,
-            max_retries=settings.arxiv_transient_retry_limit,
+            min_interval=settings.sync_papers_arxiv_min_interval,
+            max_concurrent=SYNC_PAPERS_ARXIV_MAX_CONCURRENT,
         )
-        scope = build_scope_payload(scope_json)
-        for category in categories:
-            _run_stop_check(stop_check)
-            if scope.day is None and scope.month is None and scope.from_date is None and scope.to_date is None:
-                lock_key = f"arxiv:{category}:all:{max_results}"
-                if not try_advisory_lock(db, lock_key):
-                    stats["categories_skipped_locked"] += 1
-                    _emit_progress(progress, stats)
-                    continue
-                try:
-                    _run_stop_check(stop_check)
-                    started = time.perf_counter()
-                    status, body, headers, error = await client.fetch_category_page(category=category, start=0, max_results=max_results)
-                    stats["stage_seconds"]["search_fetch"] += time.perf_counter() - started
-                    if error or body is None or status is None:
-                        raise RuntimeError(f"{category}: arXiv fetch failed ({error or 'empty response'})")
-                    stats["pages_fetched"] += 1
-                    stats["provider_counts"]["arxiv"]["search_requests"] += 1
-                    _store_raw_fetch(
-                        db,
-                        provider="arxiv",
-                        surface="search_feed",
-                        request_key=f"cat:{category}:0:{max_results}",
-                        request_url=f"https://export.arxiv.org/api/query?search_query=cat:{category}",
-                        status_code=status,
-                        body=body,
-                        headers=headers,
-                    )
-                    papers = parse_papers_from_feed(body)
-                    persist_started = time.perf_counter()
-                    for paper in papers:
-                        upsert_paper(db, paper)
-                    db.commit()
-                    stats["stage_seconds"]["persist"] += time.perf_counter() - persist_started
-                    stats["papers_upserted"] += len(papers)
-                    _update_runtime_stats(
-                        stats,
-                        started_at=started_at,
-                        processed_key="papers_upserted",
-                        throughput_key="papers_per_minute",
-                    )
-                    _emit_progress(progress, stats)
-                finally:
-                    release_advisory_lock(db, lock_key)
-                continue
 
-        if scope.day is None and scope.month is None and scope.from_date is None and scope.to_date is None:
-            _update_runtime_stats(stats, started_at=started_at, processed_key="papers_upserted", throughput_key="papers_per_minute")
-            return stats
-
-        for unit in _plan_arxiv_sync_units(scope_json, categories):
+        for unit in _plan_sync_papers_arxiv_units(scope_json, categories):
             _run_stop_check(stop_check)
             lock_key = _arxiv_lock_key_for_unit(unit)
             if not try_advisory_lock(db, lock_key):
@@ -1205,7 +1156,7 @@ async def run_sync_arxiv(
 
                 if unit.transport == "list_month":
                     assert unit.fetch_month is not None
-                    await _sync_arxiv_archive_month(
+                    await _sync_papers_archive_month(
                         db,
                         client,
                         category=unit.category,
@@ -1216,7 +1167,7 @@ async def run_sync_arxiv(
                     )
                 elif unit.transport == "catchup_day":
                     assert unit.fetch_day is not None
-                    await _sync_arxiv_catchup_day(
+                    await _sync_papers_catchup_day(
                         db,
                         client,
                         category=unit.category,
@@ -1227,7 +1178,7 @@ async def run_sync_arxiv(
                     )
                 elif unit.transport == "submitted_day":
                     assert unit.fetch_day is not None
-                    await _sync_arxiv_submitted_day(
+                    await _sync_papers_submitted_day(
                         db,
                         client,
                         category=unit.category,
@@ -1237,7 +1188,7 @@ async def run_sync_arxiv(
                         stop_check=stop_check,
                     )
                 else:
-                    raise RuntimeError(f"Unsupported arXiv sync transport: {unit.transport}")
+                    raise RuntimeError(f"Unsupported sync-papers arXiv transport: {unit.transport}")
 
                 _record_arxiv_days_completed(
                     db,
@@ -1318,57 +1269,6 @@ async def _probe_huggingface(
             "raw_fetch_ref": "huggingface_api",
         }
     )
-    if payload_status == 404:
-        return observations, True, raw_fetches
-
-    started = time.perf_counter()
-    html_status, html_body, html_headers, html_error = await client.fetch_paper_html(arxiv_id)
-    stage_seconds["huggingface_html"] += time.perf_counter() - started
-    provider_counts["html_requests"] += 1
-    raw_fetches["huggingface_html"] = RawFetchEnvelope(
-        provider="huggingface",
-        surface="paper_html",
-        request_key=f"paper_html:{arxiv_id}",
-        request_url=f"https://huggingface.co/papers/{arxiv_id}",
-        status_code=html_status,
-        body=html_body,
-        headers=html_headers,
-    )
-    if html_error and html_status != 404:
-        provider_counts["html_failures"] += 1
-        observations.append(
-            {
-                "provider": "huggingface",
-                "surface": "paper_html",
-                "status": ObservationStatus.fetch_failed,
-                "error_message": html_error,
-                "raw_fetch_ref": "huggingface_html",
-            }
-        )
-        return observations, False, raw_fetches
-
-    html_urls = extract_github_url_from_hf_html(html_body)
-    if html_urls:
-        for url in html_urls:
-            observations.append(
-                {
-                    "provider": "huggingface",
-                    "surface": "paper_html",
-                    "status": ObservationStatus.found,
-                    "observed_repo_url": url,
-                    "normalized_repo_url": url,
-                    "raw_fetch_ref": "huggingface_html",
-                }
-            )
-    else:
-        observations.append(
-            {
-                "provider": "huggingface",
-                "surface": "paper_html",
-                "status": ObservationStatus.checked_no_match,
-                "raw_fetch_ref": "huggingface_html",
-            }
-        )
     return observations, True, raw_fetches
 
 
@@ -1533,7 +1433,6 @@ def _persist_link_lookup_result(
 async def _lookup_links_for_paper(
     settings: Any,
     *,
-    arxiv_client: ArxivLinksClient,
     hf_client: HuggingFaceLinksClient,
     alphaxiv_client: AlphaXivLinksClient,
     task: LinkLookupTask,
@@ -1545,7 +1444,7 @@ async def _lookup_links_for_paper(
     errors: list[str] = []
     complete = True
 
-    comment_urls = extract_github_urls_from_comment(task.comment)
+    comment_urls = extract_github_repo_urls(task.comment or "")
     if comment_urls:
         metrics["provider_counts"]["arxiv"]["comment_matches"] += len(comment_urls)
         for url in comment_urls:
@@ -1568,69 +1467,34 @@ async def _lookup_links_for_paper(
             }
         )
 
-    _run_stop_check(stop_check)
-    started = time.perf_counter()
-    abs_status, abs_body, abs_headers, abs_error = await arxiv_client.fetch_abs_html(task.arxiv_id)
-    metrics["stage_seconds"]["arxiv_abs"] += time.perf_counter() - started
-    metrics["provider_counts"]["arxiv"]["abs_requests"] += 1
-    raw_fetches["arxiv_abs"] = RawFetchEnvelope(
-        provider="arxiv",
-        surface="abs_html",
-        request_key=f"abs:{task.arxiv_id}",
-        request_url=build_arxiv_abs_url(task.arxiv_id),
-        status_code=abs_status,
-        body=abs_body,
-        headers=abs_headers,
-    )
-    if abs_error or abs_status is None:
-        complete = False
-        metrics["provider_counts"]["arxiv"]["abs_failures"] += 1
-        errors.append(abs_error or "arXiv abs fetch failed")
-        observations.append(
-            {
-                "provider": "arxiv",
-                "surface": "abs_html",
-                "status": ObservationStatus.fetch_failed,
-                "error_message": abs_error or "arXiv abs fetch failed",
-                "raw_fetch_ref": "arxiv_abs",
-            }
-        )
-    else:
-        abs_urls = extract_github_urls_from_abs_html(abs_body)
-        if abs_urls:
-            for url in abs_urls:
+    final_urls = _finalize_repo_urls(observations)
+
+    if not final_urls:
+        abstract_urls = extract_github_repo_urls(task.abstract or "")
+        if abstract_urls:
+            metrics["provider_counts"]["arxiv"]["abstract_matches"] += len(abstract_urls)
+            for url in abstract_urls:
                 observations.append(
                     {
                         "provider": "arxiv",
-                        "surface": "abs_html",
+                        "surface": "abstract",
                         "status": ObservationStatus.found,
                         "observed_repo_url": url,
                         "normalized_repo_url": url,
-                        "raw_fetch_ref": "arxiv_abs",
+                        "evidence_excerpt": task.abstract,
                     }
                 )
         else:
             observations.append(
                 {
                     "provider": "arxiv",
-                    "surface": "abs_html",
+                    "surface": "abstract",
                     "status": ObservationStatus.checked_no_match,
-                    "raw_fetch_ref": "arxiv_abs",
                 }
             )
-
-    final_urls = _finalize_repo_urls(observations)
-    if not final_urls and settings.huggingface_enabled:
-        _run_stop_check(stop_check)
-        hf_observations, hf_complete, hf_raw_fetches = await _probe_huggingface(hf_client, task.arxiv_id, metrics)
-        observations.extend(hf_observations)
-        raw_fetches.update(hf_raw_fetches)
-        complete = complete and hf_complete
-        if not hf_complete:
-            errors.append("Hugging Face lookup incomplete")
         final_urls = _finalize_repo_urls(observations)
 
-    if not final_urls and settings.alphaxiv_enabled:
+    if not final_urls and settings.find_repos_alphaxiv_enabled:
         _run_stop_check(stop_check)
         alphaxiv_observations, alphaxiv_complete, alphaxiv_raw_fetches = await _probe_alphaxiv(
             alphaxiv_client,
@@ -1642,6 +1506,16 @@ async def _lookup_links_for_paper(
         complete = complete and alphaxiv_complete
         if not alphaxiv_complete:
             errors.append("AlphaXiv lookup incomplete")
+        final_urls = _finalize_repo_urls(observations)
+
+    if not final_urls and settings.find_repos_huggingface_enabled:
+        _run_stop_check(stop_check)
+        hf_observations, hf_complete, hf_raw_fetches = await _probe_huggingface(hf_client, task.arxiv_id, metrics)
+        observations.extend(hf_observations)
+        raw_fetches.update(hf_raw_fetches)
+        complete = complete and hf_complete
+        if not hf_complete:
+            errors.append("Hugging Face lookup incomplete")
 
     return LinkLookupResult(
         arxiv_id=task.arxiv_id,
@@ -1663,6 +1537,7 @@ async def run_find_repos(
     settings = get_settings()
     started_at = time.perf_counter()
     _required_scope_categories(scope_json)
+    _required_scope_window(scope_json)
     papers = scoped_papers(db, scope_json)
     force = bool(scope_json.get("force"))
     due_papers = [paper for paper in papers if _link_lookup_due(paper.repo_state, force=force)]
@@ -1686,22 +1561,16 @@ async def run_find_repos(
         return stats
 
     async with aiohttp.ClientSession(timeout=build_timeout()) as session:
-        arxiv_client = ArxivLinksClient(
-            session,
-            min_interval=settings.arxiv_api_min_interval,
-            max_concurrent=settings.find_repos_arxiv_max_concurrent,
-        )
         hf_client = HuggingFaceLinksClient(
             session,
             huggingface_token=settings.huggingface_token,
-            min_interval=settings.huggingface_min_interval,
+            min_interval=settings.find_repos_huggingface_min_interval,
             max_concurrent=settings.find_repos_huggingface_max_concurrent,
-            html_max_concurrent=settings.find_repos_huggingface_html_max_concurrent,
         )
         alphaxiv_client = AlphaXivLinksClient(
             session,
             alphaxiv_token=settings.alphaxiv_token,
-            min_interval=settings.alphaxiv_min_interval,
+            min_interval=settings.find_repos_alphaxiv_min_interval,
             max_concurrent=settings.find_repos_alphaxiv_max_concurrent,
         )
 
@@ -1709,7 +1578,7 @@ async def run_find_repos(
         request_queue: asyncio.Queue[LinkLookupTask | None] = asyncio.Queue()
         result_queue: asyncio.Queue[LinkLookupResult | Exception] = asyncio.Queue(maxsize=max(1, worker_count * 2))
         for paper in due_papers:
-            request_queue.put_nowait(LinkLookupTask(arxiv_id=paper.arxiv_id, comment=paper.comment))
+            request_queue.put_nowait(LinkLookupTask(arxiv_id=paper.arxiv_id, comment=paper.comment, abstract=paper.abstract))
         for _ in range(worker_count):
             request_queue.put_nowait(None)
 
@@ -1721,7 +1590,6 @@ async def run_find_repos(
                 try:
                     result = await _lookup_links_for_paper(
                         settings,
-                        arxiv_client=arxiv_client,
                         hf_client=hf_client,
                         alphaxiv_client=alphaxiv_client,
                         task=task,
@@ -1837,7 +1705,7 @@ def _build_github_graphql_query(batch: list[tuple[str, str, str]]) -> str:
                 " isArchived"
                 " pushedAt"
                 " licenseInfo { spdxId name }"
-                " repositoryTopics(first: 20) { nodes { topic { name } } }"
+                f" repositoryTopics(first: {REFRESH_METADATA_GITHUB_GRAPHQL_TOPICS_FIRST}) {{ nodes {{ topic {{ name }} }} }}"
                 " }"
             )
         )
@@ -2071,6 +1939,7 @@ async def run_refresh_metadata(
     settings = get_settings()
     started_at = time.perf_counter()
     _required_scope_categories(scope_json)
+    _required_scope_window(scope_json)
     papers = scoped_papers(db, scope_json)
     repo_urls: set[str] = set()
     for paper in papers:
@@ -2091,18 +1960,25 @@ async def run_refresh_metadata(
     }
     _update_runtime_stats(stats, started_at=started_at, processed_key="repos_completed", throughput_key="repos_per_minute")
     _emit_progress(progress, stats)
-    min_interval = settings.github_min_interval if settings.github_token.strip() else max(settings.github_min_interval, 60.0)
+    min_interval = (
+        settings.refresh_metadata_github_min_interval
+        if settings.github_token.strip()
+        else max(
+            settings.refresh_metadata_github_min_interval,
+            REFRESH_METADATA_GITHUB_ANONYMOUS_REST_MIN_INTERVAL_SECONDS,
+        )
+    )
     rest_limiter = RateLimiter(min_interval)
-    graphql_limiter = RateLimiter(settings.github_min_interval)
+    graphql_limiter = RateLimiter(settings.refresh_metadata_github_min_interval)
 
     async with aiohttp.ClientSession(timeout=build_timeout()) as session:
-        rest_semaphore = asyncio.Semaphore(max(1, settings.github_rest_fallback_max_concurrent))
-        graphql_semaphore = asyncio.Semaphore(1)
+        rest_semaphore = asyncio.Semaphore(max(1, settings.refresh_metadata_github_rest_fallback_max_concurrent))
+        graphql_semaphore = asyncio.Semaphore(REFRESH_METADATA_GITHUB_GRAPHQL_MAX_CONCURRENT)
         fallback_urls: list[str] = []
 
         sorted_urls = sorted(repo_urls)
         if settings.github_token.strip():
-            for batch in _chunked(sorted_urls, settings.github_graphql_batch_size):
+            for batch in _chunked(sorted_urls, settings.refresh_metadata_github_graphql_batch_size):
                 _run_stop_check(stop_check)
                 started = time.perf_counter()
                 resolved, batch_fallbacks, raw_fetch, error = await _fetch_github_graphql_batch(

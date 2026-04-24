@@ -6,14 +6,13 @@ from sqlalchemy.orm import Session
 from papertorepo.db.models import Job, JobStatus, utc_now
 
 
-STOP_REASON_USER_REQUESTED = "user_requested"
-STOP_REQUESTED_MESSAGE = "Stop requested by user."
-STOPPED_MESSAGE = "Stopped by user."
+JOB_STOP_REASON_USER_REQUESTED = "user_requested"
+JOB_STOPPED_MESSAGE = "Stopped by user."
 
 
 class JobStopRequested(RuntimeError):
     def __init__(self, job_id: str) -> None:
-        super().__init__(STOPPED_MESSAGE)
+        super().__init__(JOB_STOPPED_MESSAGE)
         self.job_id = job_id
 
 
@@ -21,7 +20,7 @@ def request_job_stop(job: Job) -> bool:
     if job.stop_requested_at is not None:
         return False
     job.stop_requested_at = utc_now()
-    job.stop_reason = STOP_REASON_USER_REQUESTED
+    job.stop_reason = JOB_STOP_REASON_USER_REQUESTED
     return True
 
 
@@ -29,7 +28,7 @@ def mark_job_cancelled(
     job: Job,
     *,
     clear_lock: bool = False,
-    message: str = STOPPED_MESSAGE,
+    message: str = JOB_STOPPED_MESSAGE,
 ) -> None:
     request_job_stop(job)
     finished_at = utc_now()

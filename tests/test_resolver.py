@@ -25,7 +25,7 @@ def test_build_final_links_prefers_multi_provider_repo():
         [
             make_observation(provider="arxiv", surface="comment", url="https://github.com/foo/bar"),
             make_observation(provider="huggingface", surface="paper_api", url="https://github.com/foo/bar"),
-            make_observation(provider="huggingface", surface="paper_html", url="https://github.com/other/repo"),
+            make_observation(provider="alphaxiv", surface="paper_html", url="https://github.com/other/repo"),
         ],
     )
     assert links[0]["normalized_repo_url"] == "https://github.com/foo/bar"

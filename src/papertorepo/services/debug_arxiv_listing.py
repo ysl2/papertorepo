@@ -14,7 +14,7 @@ from papertorepo.core.http import build_timeout
 from papertorepo.core.normalize.arxiv import build_arxiv_abs_url
 from papertorepo.providers.arxiv_metadata import ArxivMetadataClient
 from papertorepo.core.config import get_settings
-from papertorepo.db.models import ArxivArchiveAppearance, Paper
+from papertorepo.db.models import SyncPapersArxivArchiveAppearance, Paper
 from papertorepo.core.scope import month_label, resolve_archive_months_from_scope_json, resolve_categories_from_scope_json
 from papertorepo.services.pipeline import _extract_arxiv_ids_from_listing_html
 
@@ -195,7 +195,7 @@ async def generate_listing_baseline(
     summaries: list[ListingMonthSummary] = []
 
     async with aiohttp.ClientSession(timeout=build_timeout()) as session:
-        client = ArxivMetadataClient(session, min_interval=get_settings().arxiv_api_min_interval)
+        client = ArxivMetadataClient(session, min_interval=get_settings().sync_papers_arxiv_min_interval)
         for category in categories:
             for archive_month in archive_months:
                 summaries.append(
@@ -264,9 +264,9 @@ def compare_listing_baseline_against_db(
 
             appearance_ids = list(
                 db.scalars(
-                    select(ArxivArchiveAppearance.arxiv_id).where(
-                        ArxivArchiveAppearance.category == category,
-                        ArxivArchiveAppearance.archive_month == archive_month,
+                    select(SyncPapersArxivArchiveAppearance.arxiv_id).where(
+                        SyncPapersArxivArchiveAppearance.category == category,
+                        SyncPapersArxivArchiveAppearance.archive_month == archive_month,
                     )
                 ).all()
             )

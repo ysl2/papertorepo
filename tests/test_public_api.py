@@ -9,7 +9,7 @@ from papertorepo.api.app import app, create_app
 from papertorepo.core.config import clear_settings_cache
 from papertorepo.db.session import session_scope
 from papertorepo.db.models import Job, JobAttemptMode, JobStatus, Paper, PaperRepoState, RepoStableStatus, utc_now
-from papertorepo.jobs.queue import claim_next_job, create_sync_arxiv_job, process_job
+from papertorepo.jobs.queue import claim_next_job, create_sync_papers_job, process_job
 from papertorepo.api.schemas import ScopePayload
 
 
@@ -154,7 +154,7 @@ def test_public_paper_detail_returns_full_payload(db_env):
 
 def test_health_reports_serial_queue_runtime_metadata(db_env, monkeypatch):
     monkeypatch.setenv("GITHUB_TOKEN", "")
-    monkeypatch.setenv("GITHUB_MIN_INTERVAL", "0.5")
+    monkeypatch.setenv("REFRESH_METADATA_GITHUB_MIN_INTERVAL", "0.5")
     clear_settings_cache()
 
     with TestClient(create_app()) as client:
@@ -165,8 +165,19 @@ def test_health_reports_serial_queue_runtime_metadata(db_env, monkeypatch):
     assert payload["queue_mode"] == "serial"
     assert payload["github_auth_configured"] is False
     assert payload["effective_github_min_interval_seconds"] == 60.0
-    assert payload["step_providers"]["sync_arxiv"] == ["arxiv_listing", "arxiv_export_api"]
-    assert payload["step_providers"]["find_repos"] == ["arxiv_abs", "huggingface", "alphaxiv"]
+    assert payload["step_providers"]["sync_papers"] == [
+        "arxiv_listing",
+        "arxiv_catchup",
+        "arxiv_submitted_day",
+        "arxiv_id_list",
+    ]
+    assert payload["step_providers"]["find_repos"] == [
+        "paper_comment",
+        "paper_abstract",
+        "alphaxiv_api",
+        "alphaxiv_html",
+        "huggingface_api",
+    ]
     assert payload["step_providers"]["refresh_metadata"] == ["github_api"]
 
     clear_settings_cache()
@@ -240,8 +251,8 @@ def test_sync_launch_endpoint_blocks_identical_active_scope(db_env):
     }
 
     with TestClient(app) as client:
-        first = client.post("/api/v1/jobs/sync-arxiv", json=payload)
-        second = client.post("/api/v1/jobs/sync-arxiv", json=payload)
+        first = client.post("/api/v1/jobs/sync-papers", json=payload)
+        second = client.post("/api/v1/jobs/sync-papers", json=payload)
 
     assert first.status_code == 200
     assert second.status_code == 409
@@ -265,7 +276,7 @@ async def test_sync_launch_endpoint_creates_fresh_batch_after_previous_success_w
     )
 
     with session_scope() as db:
-        first_batch = create_sync_arxiv_job(db, scope)
+        first_batch = create_sync_papers_job(db, scope)
 
     with session_scope() as db:
         claimed = claim_next_job(db, "worker:test")
@@ -285,7 +296,7 @@ async def test_sync_launch_endpoint_creates_fresh_batch_after_previous_success_w
         "to": "2025-04-10",
     }
     with TestClient(app) as client:
-        response = client.post("/api/v1/jobs/sync-arxiv", json=payload)
+        response = client.post("/api/v1/jobs/sync-papers", json=payload)
 
     assert response.status_code == 200
     body = response.json()
@@ -312,8 +323,8 @@ async def test_sync_launch_endpoint_creates_fresh_batch_after_previous_success_w
 
 def test_same_scope_fresh_runs_remain_independent_in_attempt_history(db_env):
     with session_scope() as db:
-        first = create_sync_arxiv_job(db, ScopePayload(categories=["cs.CV"], month="2026-04"))
-        second = create_sync_arxiv_job(db, ScopePayload(categories=["cs.CV"], month="2026-04"))
+        first = create_sync_papers_job(db, ScopePayload(categories=["cs.CV"], month="2026-04"))
+        second = create_sync_papers_job(db, ScopePayload(categories=["cs.CV"], month="2026-04"))
         first.status = JobStatus.succeeded
         first.finished_at = utc_now()
         second.status = JobStatus.succeeded

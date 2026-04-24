@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from papertorepo.core.config import clear_settings_cache
 from papertorepo.db.session import session_scope
-from papertorepo.db.models import ArxivArchiveAppearance, GitHubRepo, Paper, PaperRepoState, RawFetch, RepoStableStatus, utc_now
+from papertorepo.db.models import SyncPapersArxivArchiveAppearance, GitHubRepo, Paper, PaperRepoState, RawFetch, RepoStableStatus, utc_now
 from papertorepo.services.pipeline import run_refresh_metadata, run_find_repos
 from tests.conftest import insert_paper
 
@@ -18,14 +18,14 @@ def at_utc_midnight(value: date) -> datetime:
     return datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
 
 
-def _insert_paper(arxiv_id: str, published_at: date) -> None:
+def _insert_paper(arxiv_id: str, published_at: date, *, abstract: str = "Example abstract") -> None:
     with session_scope() as db:
         db.add(
             Paper(
                 arxiv_id=arxiv_id,
                 abs_url=f"https://arxiv.org/abs/{arxiv_id}",
                 title=f"Paper {arxiv_id}",
-                abstract="Example abstract",
+                abstract=abstract,
                 published_at=at_utc_midnight(published_at),
                 updated_at=at_utc_midnight(published_at),
                 authors_json=["Alice"],
@@ -39,7 +39,7 @@ def _insert_paper(arxiv_id: str, published_at: date) -> None:
 
 
 @pytest.mark.anyio
-async def test_find_repos_skips_fresh_stable_records(db_env, monkeypatch):
+async def test_find_repos_skips_fresh_stable_records(db_env):
     insert_paper()
     with session_scope() as db:
         db.add(
@@ -55,17 +55,8 @@ async def test_find_repos_skips_fresh_stable_records(db_env, monkeypatch):
             )
         )
 
-    class FailArxivClient:
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-        async def fetch_abs_html(self, _arxiv_id):
-            raise AssertionError("fresh records should not re-fetch arXiv")
-
-    monkeypatch.setattr("papertorepo.services.pipeline.ArxivLinksClient", FailArxivClient)
-
     with session_scope() as db:
-        stats = await run_find_repos(db, {"categories": ["cs.CV"]})
+        stats = await run_find_repos(db, {"categories": ["cs.CV"], "month": "2026-04"})
 
     assert stats["papers_processed"] == 0
     assert stats["papers_skipped_fresh"] == 1
@@ -73,7 +64,7 @@ async def test_find_repos_skips_fresh_stable_records(db_env, monkeypatch):
 
 @pytest.mark.anyio
 async def test_find_repos_preserves_previous_found_state_after_incomplete_lookup(db_env, monkeypatch):
-    monkeypatch.setenv("ALPHAXIV_ENABLED", "false")
+    monkeypatch.setenv("FIND_REPOS_ALPHAXIV_ENABLED", "false")
     clear_settings_cache()
     insert_paper()
     expired_refresh_after = utc_now() - timedelta(hours=1)
@@ -92,22 +83,12 @@ async def test_find_repos_preserves_previous_found_state_after_incomplete_lookup
             )
         )
 
-    class FakeArxivClient:
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-        async def fetch_abs_html(self, _arxiv_id):
-            return 200, "<html>No repo here</html>", {"Content-Type": "text/html"}, None
-
     class FakeHuggingFaceClient:
         def __init__(self, *_args, **_kwargs):
             pass
 
         async def fetch_paper_payload(self, _arxiv_id):
             return 503, None, {}, "hf unavailable"
-
-        async def fetch_paper_html(self, _arxiv_id):
-            raise AssertionError("html fallback should not run after payload failure")
 
     class FakeAlphaXivClient:
         def __init__(self, *_args, **_kwargs):
@@ -119,12 +100,11 @@ async def test_find_repos_preserves_previous_found_state_after_incomplete_lookup
         async def fetch_paper_html(self, _arxiv_id):
             raise AssertionError("alphaxiv is disabled")
 
-    monkeypatch.setattr("papertorepo.services.pipeline.ArxivLinksClient", FakeArxivClient)
     monkeypatch.setattr("papertorepo.services.pipeline.HuggingFaceLinksClient", FakeHuggingFaceClient)
     monkeypatch.setattr("papertorepo.services.pipeline.AlphaXivLinksClient", FakeAlphaXivClient)
 
     with session_scope() as db:
-        await run_find_repos(db, {"categories": ["cs.CV"]})
+        await run_find_repos(db, {"categories": ["cs.CV"], "month": "2026-04"})
 
     with session_scope() as db:
         state = db.get(PaperRepoState, "2604.12345")
@@ -141,22 +121,12 @@ async def test_find_repos_preserves_previous_found_state_after_incomplete_lookup
 async def test_find_repos_marks_not_found_only_after_complete_lookup(db_env, monkeypatch):
     insert_paper()
 
-    class FakeArxivClient:
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-        async def fetch_abs_html(self, _arxiv_id):
-            return 200, "<html>No repo here</html>", {"Content-Type": "text/html"}, None
-
     class FakeHuggingFaceClient:
         def __init__(self, *_args, **_kwargs):
             pass
 
         async def fetch_paper_payload(self, _arxiv_id):
             return 404, "", {"Content-Type": "application/json"}, None
-
-        async def fetch_paper_html(self, _arxiv_id):
-            raise AssertionError("404 payload should short-circuit html fallback")
 
     class FakeAlphaXivClient:
         def __init__(self, *_args, **_kwargs):
@@ -168,12 +138,11 @@ async def test_find_repos_marks_not_found_only_after_complete_lookup(db_env, mon
         async def fetch_paper_html(self, _arxiv_id):
             raise AssertionError("404 payload should short-circuit html fallback")
 
-    monkeypatch.setattr("papertorepo.services.pipeline.ArxivLinksClient", FakeArxivClient)
     monkeypatch.setattr("papertorepo.services.pipeline.HuggingFaceLinksClient", FakeHuggingFaceClient)
     monkeypatch.setattr("papertorepo.services.pipeline.AlphaXivLinksClient", FakeAlphaXivClient)
 
     with session_scope() as db:
-        stats = await run_find_repos(db, {"categories": ["cs.CV"]})
+        stats = await run_find_repos(db, {"categories": ["cs.CV"], "month": "2026-04"})
         assert stats["not_found"] == 1
 
     with session_scope() as db:
@@ -239,7 +208,7 @@ async def test_refresh_metadata_refreshes_dynamic_fields_but_keeps_created_at(db
     monkeypatch.setattr("papertorepo.services.pipeline.request_text", fake_request_text)
 
     with session_scope() as db:
-        stats = await run_refresh_metadata(db, {"categories": ["cs.CV"]})
+        stats = await run_refresh_metadata(db, {"categories": ["cs.CV"], "month": "2026-04"})
         assert stats["updated"] == 1
 
     with session_scope() as db:
@@ -255,33 +224,21 @@ async def test_refresh_metadata_refreshes_dynamic_fields_but_keeps_created_at(db
 
 @pytest.mark.anyio
 async def test_find_repos_uses_database_published_at_scope_not_archive_month(db_env, monkeypatch):
-    monkeypatch.setenv("HUGGINGFACE_ENABLED", "false")
-    monkeypatch.setenv("ALPHAXIV_ENABLED", "false")
+    monkeypatch.setenv("FIND_REPOS_HUGGINGFACE_ENABLED", "false")
+    monkeypatch.setenv("FIND_REPOS_ALPHAXIV_ENABLED", "false")
     clear_settings_cache()
 
-    _insert_paper("2604.00001", date(2026, 4, 18))
-    _insert_paper("2605.00001", date(2026, 5, 2))
+    _insert_paper("2604.00001", date(2026, 4, 18), abstract="Code: https://github.com/foo/april")
+    _insert_paper("2605.00001", date(2026, 5, 2), abstract="Code: https://github.com/foo/may")
 
     with session_scope() as db:
         db.add(
-            ArxivArchiveAppearance(
+            SyncPapersArxivArchiveAppearance(
                 arxiv_id="2605.00001",
                 category="cs.CV",
                 archive_month=date(2026, 4, 1),
             )
         )
-
-    processed_ids: list[str] = []
-
-    class FakeArxivClient:
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-        async def fetch_abs_html(self, arxiv_id):
-            processed_ids.append(arxiv_id)
-            return 200, "<html>No repo here</html>", {"Content-Type": "text/html"}, None
-
-    monkeypatch.setattr("papertorepo.services.pipeline.ArxivLinksClient", FakeArxivClient)
 
     with session_scope() as db:
         stats = await run_find_repos(
@@ -291,7 +248,9 @@ async def test_find_repos_uses_database_published_at_scope_not_archive_month(db_
 
     assert stats["papers_considered"] == 1
     assert stats["papers_processed"] == 1
-    assert processed_ids == ["2604.00001"]
+    with session_scope() as db:
+        assert db.get(PaperRepoState, "2604.00001") is not None
+        assert db.get(PaperRepoState, "2605.00001") is None
 
 
 @pytest.mark.anyio
@@ -303,7 +262,7 @@ async def test_refresh_metadata_uses_database_published_at_scope_not_archive_mon
 
     with session_scope() as db:
         db.add(
-            ArxivArchiveAppearance(
+            SyncPapersArxivArchiveAppearance(
                 arxiv_id="2605.00002",
                 category="cs.CV",
                 archive_month=date(2026, 4, 1),
@@ -468,7 +427,7 @@ async def test_refresh_metadata_uses_github_graphql_batch_with_token(db_env, mon
     monkeypatch.setattr("papertorepo.services.pipeline.request_text", fake_request_text)
 
     with session_scope() as db:
-        stats = await run_refresh_metadata(db, {"categories": ["cs.CV"]})
+        stats = await run_refresh_metadata(db, {"categories": ["cs.CV"], "month": "2026-04"})
 
     assert stats["updated"] == 2
     assert stats["repos_completed"] == 2
@@ -547,7 +506,7 @@ async def test_refresh_metadata_graphql_falls_back_to_rest_for_unresolved_repo(d
     monkeypatch.setattr("papertorepo.services.pipeline.request_text", fake_request_text)
 
     with session_scope() as db:
-        stats = await run_refresh_metadata(db, {"categories": ["cs.CV"]})
+        stats = await run_refresh_metadata(db, {"categories": ["cs.CV"], "month": "2026-04"})
 
     assert stats["updated"] == 1
     assert stats["repos_completed"] == 1

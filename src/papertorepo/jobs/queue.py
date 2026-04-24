@@ -28,17 +28,17 @@ from papertorepo.db.models import Job, JobAttemptMode, JobStatus, JobType, utc_n
 from papertorepo.core.scope import build_scope_json, build_scope_payload, build_dedupe_key
 from papertorepo.api.schemas import ChildSummary, JobRead, ScopePayload, validate_scope_for_job
 from papertorepo.services.pipeline import (
-    backfill_arxiv_archive_appearances,
+    backfill_sync_papers_arxiv_archive_appearances,
     ensure_runtime_dirs,
     run_export,
     run_find_repos,
     run_refresh_metadata,
-    run_sync_arxiv,
+    run_sync_papers,
 )
 
 
-INIT_DATABASE_LOCK_ID = 649183502117041921
-REUSED_CHILD_LOCKED_BY = "batch-reuse"
+JOB_QUEUE_INIT_DATABASE_LOCK_ID = 649183502117041921
+JOB_QUEUE_REUSED_CHILD_LOCKED_BY = "batch-reuse"
 
 
 @dataclass(frozen=True)
@@ -52,21 +52,21 @@ def init_database() -> None:
     engine = get_engine()
     with engine.begin() as conn:
         if engine.dialect.name == "postgresql":
-            conn.exec_driver_sql(f"SELECT pg_advisory_lock({INIT_DATABASE_LOCK_ID})")
+            conn.exec_driver_sql(f"SELECT pg_advisory_lock({JOB_QUEUE_INIT_DATABASE_LOCK_ID})")
         try:
             from papertorepo.db.migrations import run_database_migrations
 
             run_database_migrations(conn)
         finally:
             if engine.dialect.name == "postgresql":
-                conn.exec_driver_sql(f"SELECT pg_advisory_unlock({INIT_DATABASE_LOCK_ID})")
+                conn.exec_driver_sql(f"SELECT pg_advisory_unlock({JOB_QUEUE_INIT_DATABASE_LOCK_ID})")
     with session_scope() as db:
-        backfill_arxiv_archive_appearances(db)
+        backfill_sync_papers_arxiv_archive_appearances(db)
 
 
 def _fresh_running_after() -> object:
     settings = get_settings()
-    return utc_now() - timedelta(seconds=settings.job_timeout_seconds)
+    return utc_now() - timedelta(seconds=settings.job_queue_running_timeout_seconds)
 
 
 def _parent_job_clause(parent_job_id: str | None) -> object:
@@ -213,7 +213,7 @@ def create_sync_job(
     )
 
 
-def create_sync_arxiv_job(
+def create_sync_papers_job(
     db: Session,
     scope: ScopePayload,
     *,
@@ -223,7 +223,7 @@ def create_sync_arxiv_job(
 ) -> Job:
     return create_sync_job(
         db,
-        JobType.sync_arxiv,
+        JobType.sync_papers,
         scope,
         parent_job_id=parent_job_id,
         attempt_mode=attempt_mode,
@@ -376,7 +376,7 @@ def _create_reused_child_record(
         created_at=timestamp,
         started_at=timestamp,
         finished_at=timestamp,
-        locked_by=REUSED_CHILD_LOCKED_BY,
+        locked_by=JOB_QUEUE_REUSED_CHILD_LOCKED_BY,
         locked_at=timestamp,
     )
     db.add(job)
@@ -624,7 +624,7 @@ def rerun_job(db: Session, job_id: str) -> Job:
     scope = build_scope_payload(job.scope_json)
     if _job_is_batch_root(job):
         return _rerun_batch_root_job(db, job, scope)
-    if job.job_type in {JobType.sync_arxiv, JobType.find_repos, JobType.refresh_metadata}:
+    if job.job_type in {JobType.sync_papers, JobType.find_repos, JobType.refresh_metadata}:
         if job.parent_job_id is not None:
             return _rerun_batch_child_job(db, job, scope)
         return _rerun_direct_sync_job(db, job, scope)
@@ -804,8 +804,8 @@ async def process_job(job_id: str) -> None:
 
         try:
             stop_check()
-            if job.job_type == JobType.sync_arxiv:
-                job.stats_json = await run_sync_arxiv(db, job.scope_json, progress=persist_progress, stop_check=stop_check)
+            if job.job_type == JobType.sync_papers:
+                job.stats_json = await run_sync_papers(db, job.scope_json, progress=persist_progress, stop_check=stop_check)
             elif is_batch_root_job_type(job.job_type):
                 job.stats_json = await run_batch_root_job(db, job, progress=persist_progress, stop_check=stop_check)
             elif job.job_type == JobType.find_repos:
@@ -835,6 +835,6 @@ async def run_worker_forever() -> None:
         with session_scope() as db:
             job = claim_next_job(db, worker_name)
         if job is None:
-            await asyncio.sleep(settings.worker_poll_seconds)
+            await asyncio.sleep(settings.job_queue_worker_poll_seconds)
             continue
         await process_job(job.id)

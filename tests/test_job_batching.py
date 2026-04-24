@@ -10,7 +10,7 @@ from papertorepo.db.session import session_scope
 from papertorepo.jobs.queue import (
     claim_next_job,
     create_job,
-    create_sync_arxiv_job,
+    create_sync_papers_job,
     create_sync_job,
     list_child_jobs,
     process_job,
@@ -19,13 +19,13 @@ from papertorepo.jobs.queue import (
 )
 from papertorepo.jobs.batches import planned_child_scope_jsons
 from papertorepo.db.models import Job, JobAttemptMode, JobStatus, JobType
-from papertorepo.core.scope import expand_arxiv_child_scope_jsons
+from papertorepo.core.scope import expand_sync_papers_child_scope_jsons
 from papertorepo.api.schemas import ScopePayload
 
 
-def test_create_sync_arxiv_job_uses_batch_for_multi_month_scope(db_env):
+def test_create_sync_papers_job_uses_batch_for_multi_month_scope(db_env):
     with session_scope() as db:
-        job = create_sync_arxiv_job(
+        job = create_sync_papers_job(
             db,
             ScopePayload(
                 categories=["cs.CV"],
@@ -33,18 +33,17 @@ def test_create_sync_arxiv_job_uses_batch_for_multi_month_scope(db_env):
             ),
         )
 
-    assert job.job_type == JobType.sync_arxiv_batch
+    assert job.job_type == JobType.sync_papers_batch
     assert job.parent_job_id is None
 
 
-def test_expand_arxiv_child_scope_jsons_inherit_force_flag():
-    child_scopes = expand_arxiv_child_scope_jsons(
+def test_expand_sync_papers_child_scope_jsons_inherit_force_flag():
+    child_scopes = expand_sync_papers_child_scope_jsons(
         {
             "categories": ["cs.CV"],
             "from": "2025-03-15",
             "to": "2025-04-10",
             "force": True,
-            "max_results": None,
             "day": None,
             "month": None,
             "export_mode": None,
@@ -65,7 +64,6 @@ def test_planned_child_scope_jsons_keep_partial_edges_contiguous_for_find_repos(
             "from": "2025-03-15",
             "to": "2025-06-10",
             "force": True,
-            "max_results": None,
             "day": None,
             "month": None,
             "export_mode": None,
@@ -81,7 +79,6 @@ def test_planned_child_scope_jsons_keep_partial_edges_contiguous_for_find_repos(
             "month": None,
             "from": "2025-03-15",
             "to": "2025-03-31",
-            "max_results": None,
             "force": True,
             "export_mode": None,
             "paper_ids": [],
@@ -93,7 +90,6 @@ def test_planned_child_scope_jsons_keep_partial_edges_contiguous_for_find_repos(
             "month": "2025-04",
             "from": None,
             "to": None,
-            "max_results": None,
             "force": True,
             "export_mode": None,
             "paper_ids": [],
@@ -105,7 +101,6 @@ def test_planned_child_scope_jsons_keep_partial_edges_contiguous_for_find_repos(
             "month": "2025-05",
             "from": None,
             "to": None,
-            "max_results": None,
             "force": True,
             "export_mode": None,
             "paper_ids": [],
@@ -117,7 +112,6 @@ def test_planned_child_scope_jsons_keep_partial_edges_contiguous_for_find_repos(
             "month": None,
             "from": "2025-06-01",
             "to": "2025-06-10",
-            "max_results": None,
             "force": True,
             "export_mode": None,
             "paper_ids": [],
@@ -177,9 +171,9 @@ def test_create_sync_job_canonicalizes_full_month_range_to_month(db_env):
     assert job.scope_json["to"] is None
 
 
-def test_create_sync_arxiv_job_keeps_single_partial_month_range_as_direct_job(db_env):
+def test_create_sync_papers_job_keeps_single_partial_month_range_as_direct_job(db_env):
     with session_scope() as db:
-        job = create_sync_arxiv_job(
+        job = create_sync_papers_job(
             db,
             ScopePayload(
                 categories=["cs.CV"],
@@ -187,7 +181,7 @@ def test_create_sync_arxiv_job_keeps_single_partial_month_range_as_direct_job(db
             ),
         )
 
-    assert job.job_type == JobType.sync_arxiv
+    assert job.job_type == JobType.sync_papers
     assert job.scope_json["day"] is None
     assert job.scope_json["month"] is None
     assert job.scope_json["from"] == "2025-03-15"
@@ -197,7 +191,7 @@ def test_create_sync_arxiv_job_keeps_single_partial_month_range_as_direct_job(db
 @pytest.mark.anyio
 async def test_process_batch_job_creates_archive_month_child_jobs(db_env):
     with session_scope() as db:
-        parent = create_sync_arxiv_job(
+        parent = create_sync_papers_job(
             db,
             ScopePayload(
                 categories=["cs.CV"],
@@ -218,18 +212,18 @@ async def test_process_batch_job_creates_archive_month_child_jobs(db_env):
 
     assert refreshed_parent is not None
     assert refreshed_parent.status == JobStatus.succeeded
-    assert refreshed_parent.job_type == JobType.sync_arxiv_batch
+    assert refreshed_parent.job_type == JobType.sync_papers_batch
     assert len(children) == 2
     assert [child.scope_json["month"] for child in children] == ["2025-03", "2025-04"]
     assert [child.scope_json["from"] for child in children] == [None, None]
     assert [child.scope_json["to"] for child in children] == [None, None]
-    assert all(child.job_type == JobType.sync_arxiv for child in children)
+    assert all(child.job_type == JobType.sync_papers for child in children)
 
 
 @pytest.mark.anyio
 async def test_batch_summary_uses_latest_child_attempt_per_scope(db_env):
     with session_scope() as db:
-        parent = create_sync_arxiv_job(
+        parent = create_sync_papers_job(
             db,
             ScopePayload(
                 categories=["cs.CV"],
@@ -275,7 +269,7 @@ async def test_fresh_batch_run_does_not_reuse_previous_successful_children(db_en
     )
 
     with session_scope() as db:
-        first_batch = create_sync_arxiv_job(db, scope)
+        first_batch = create_sync_papers_job(db, scope)
 
     with session_scope() as db:
         claimed = claim_next_job(db, "worker:test")
@@ -290,7 +284,7 @@ async def test_fresh_batch_run_does_not_reuse_previous_successful_children(db_en
             db.add(child)
 
     with session_scope() as db:
-        second_batch = create_sync_arxiv_job(db, scope)
+        second_batch = create_sync_papers_job(db, scope)
 
     assert second_batch.id != first_batch.id
     assert second_batch.attempt_mode == JobAttemptMode.fresh
@@ -312,7 +306,7 @@ async def test_fresh_batch_run_does_not_reuse_previous_successful_children(db_en
 
 def test_rerun_api_supports_failed_only_batch_parent_rerun(db_env):
     with session_scope() as db:
-        parent = create_sync_arxiv_job(
+        parent = create_sync_papers_job(
             db,
             ScopePayload(
                 categories=["cs.CV"],
@@ -345,7 +339,7 @@ def test_rerun_api_supports_failed_only_batch_parent_rerun(db_env):
         child_response = client.post(f"/api/v1/jobs/{child.id}/rerun")
 
     assert batch_response.status_code == 200
-    assert batch_response.json()["job_type"] == JobType.sync_arxiv_batch.value
+    assert batch_response.json()["job_type"] == JobType.sync_papers_batch.value
     assert batch_response.json()["parent_job_id"] is None
     assert batch_response.json()["attempt_mode"] == JobAttemptMode.repair.value
     assert child_response.status_code == 409
@@ -373,7 +367,7 @@ def test_rerun_api_supports_failed_only_batch_parent_rerun(db_env):
 
 def test_rerun_api_supports_latest_batch_child_jobs(db_env):
     with session_scope() as db:
-        parent = create_sync_arxiv_job(
+        parent = create_sync_papers_job(
             db,
             ScopePayload(
                 categories=["cs.CV"],
@@ -419,7 +413,7 @@ def test_rerun_api_supports_latest_batch_child_jobs(db_env):
         attempts_response = client.get(f"/api/v1/jobs/{latest_child.id}/attempts?limit=10")
 
     assert child_response.status_code == 200
-    assert child_response.json()["job_type"] == JobType.sync_arxiv.value
+    assert child_response.json()["job_type"] == JobType.sync_papers.value
     assert child_response.json()["parent_job_id"] == rerun_batch_id
 
     assert latest_children_response.status_code == 200
@@ -447,7 +441,7 @@ def test_rerun_api_supports_latest_batch_child_jobs(db_env):
 
 def test_list_jobs_root_only_excludes_child_jobs(db_env):
     with session_scope() as db:
-        parent = create_sync_arxiv_job(
+        parent = create_sync_papers_job(
             db,
             ScopePayload(
                 categories=["cs.CV"],
@@ -490,18 +484,18 @@ def test_batch_child_jobs_default_order_prefers_newer_scope_when_created_at_matc
     with session_scope() as db:
         parent = create_job(
             db,
-            JobType.sync_arxiv_batch,
+            JobType.sync_papers_batch,
             ScopePayload(categories=["cs.CV"], **{"from": date(2026, 4, 1), "to": date(2026, 5, 31)}),
         )
         april = create_job(
             db,
-            JobType.sync_arxiv,
+            JobType.sync_papers,
             ScopePayload(categories=["cs.CV"], month="2026-04"),
             parent_job_id=parent.id,
         )
         may = create_job(
             db,
-            JobType.sync_arxiv,
+            JobType.sync_papers,
             ScopePayload(categories=["cs.CV"], month="2026-05"),
             parent_job_id=parent.id,
         )

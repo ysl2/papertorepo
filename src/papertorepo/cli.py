@@ -19,7 +19,7 @@ from papertorepo.jobs.queue import init_database, rerun_job, run_worker_forever,
 from papertorepo.db.models import ExportRecord, GitHubRepo, Job, JobType
 from papertorepo.api.schemas import ExportRead, RepoRead, ScopePayload, validate_scope_for_job
 from papertorepo.core.scope import build_scope_json
-from papertorepo.services.pipeline import run_export, run_find_repos, run_refresh_metadata, run_sync_arxiv, scoped_papers
+from papertorepo.services.pipeline import run_export, run_find_repos, run_refresh_metadata, run_sync_papers, scoped_papers
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -34,10 +34,9 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("migrate")
     subparsers.add_parser("worker")
 
-    sync_arxiv = subparsers.add_parser("sync-arxiv")
-    _add_scope_arguments(sync_arxiv, require_categories=True)
-    sync_arxiv.add_argument("--max-results", type=int, default=None)
-    sync_arxiv.add_argument("--force", action="store_true")
+    sync_papers = subparsers.add_parser("sync-papers")
+    _add_scope_arguments(sync_papers, require_categories=True)
+    sync_papers.add_argument("--force", action="store_true")
 
     find_repos = subparsers.add_parser("find-repos")
     _add_scope_arguments(find_repos, require_categories=True)
@@ -101,12 +100,11 @@ def _build_scope(args: argparse.Namespace) -> dict[str, Any]:
             day=args.day,
             month=args.month,
             **{"from": getattr(args, "from_date", None), "to": getattr(args, "to_date", None)},
-            max_results=getattr(args, "max_results", None),
             force=bool(getattr(args, "force", False)),
             output_name=getattr(args, "output", None),
         )
         job_type = {
-            "sync-arxiv": JobType.sync_arxiv,
+            "sync-papers": JobType.sync_papers,
             "find-repos": JobType.find_repos,
             "refresh-metadata": JobType.refresh_metadata,
             "export": JobType.export,
@@ -159,9 +157,9 @@ async def async_main_from_args(args: argparse.Namespace) -> int:
     if args.command == "migrate":
         return 0
 
-    if args.command == "sync-arxiv":
+    if args.command == "sync-papers":
         with session_scope() as db:
-            _print_json(await run_sync_arxiv(db, _build_scope_or_exit(args)))
+            _print_json(await run_sync_papers(db, _build_scope_or_exit(args)))
         return 0
 
     if args.command == "find-repos":

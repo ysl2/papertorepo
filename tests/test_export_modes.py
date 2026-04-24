@@ -4,7 +4,7 @@ import csv
 from datetime import date, datetime, timezone
 
 from papertorepo.db.session import session_scope
-from papertorepo.db.models import ArxivArchiveAppearance, ExportRecord, Paper, utc_now
+from papertorepo.db.models import SyncPapersArxivArchiveAppearance, ExportRecord, Paper, utc_now
 from papertorepo.core.scope import build_scope_json
 from papertorepo.api.schemas import ScopePayload
 from papertorepo.services.pipeline import run_export
@@ -107,7 +107,7 @@ def test_run_export_scope_uses_database_published_at_not_archive_month(db_env):
 
     with session_scope() as db:
         db.add(
-            ArxivArchiveAppearance(
+            SyncPapersArxivArchiveAppearance(
                 arxiv_id="2605.00004",
                 category="cs.CV",
                 archive_month=date(2026, 4, 1),

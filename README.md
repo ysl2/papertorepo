@@ -35,7 +35,7 @@ Database migrations stay in the root `alembic/` directory.
 
 ## Runtime model
 
-- `sync-arxiv` stores arXiv results in PostgreSQL
+- `sync-papers` stores arXiv results in PostgreSQL
 - `find-repos` respects TTL and only re-checks papers that are unknown, missing, expired, or forced
 - `refresh-metadata` refreshes dynamic GitHub metadata every run while preserving stable metadata once initialized
 - `export` writes CSV snapshots under the runtime data directory and records them in the database
@@ -61,7 +61,7 @@ Run CLI commands against the same workspace:
 
 ```bash
 docker compose exec app uv run papertorepo jobs
-docker compose exec app uv run papertorepo sync-arxiv --categories cs.CV --month 2026-04
+docker compose exec app uv run papertorepo sync-papers --categories cs.CV --month 2026-04
 docker compose exec app uv run papertorepo find-repos --categories cs.CV --month 2026-04
 docker compose exec app uv run papertorepo refresh-metadata --categories cs.CV --month 2026-04
 docker compose exec app uv run papertorepo export --categories cs.CV --month 2026-04 --output cv-2026-04.csv
@@ -93,25 +93,26 @@ GITHUB_TOKEN=
 HUGGINGFACE_TOKEN=
 ALPHAXIV_TOKEN=
 
-HUGGINGFACE_ENABLED=true
-ALPHAXIV_ENABLED=true
+SYNC_PAPERS_ARXIV_MIN_INTERVAL=3.0
+SYNC_PAPERS_ARXIV_TTL_DAYS=30
+SYNC_PAPERS_ARXIV_ID_BATCH_SIZE=100
+SYNC_PAPERS_ARXIV_LIST_PAGE_SIZE=2000
 
-ARXIV_API_MIN_INTERVAL=0.2
-ARXIV_SYNC_TTL_DAYS=30
-ARXIV_TRANSIENT_RETRY_LIMIT=5
-ARXIV_ID_BATCH_SIZE=100
-ARXIV_LIST_PAGE_SIZE=2000
-HUGGINGFACE_MIN_INTERVAL=0.2
-ALPHAXIV_MIN_INTERVAL=0.2
-GITHUB_MIN_INTERVAL=0.2
+FIND_REPOS_LINK_TTL_DAYS=7
+FIND_REPOS_HUGGINGFACE_ENABLED=true
+FIND_REPOS_ALPHAXIV_ENABLED=true
+FIND_REPOS_HUGGINGFACE_MIN_INTERVAL=0.2
+FIND_REPOS_ALPHAXIV_MIN_INTERVAL=0.2
 FIND_REPOS_WORKER_CONCURRENCY=24
-FIND_REPOS_ARXIV_MAX_CONCURRENT=8
 FIND_REPOS_HUGGINGFACE_MAX_CONCURRENT=4
-FIND_REPOS_HUGGINGFACE_HTML_MAX_CONCURRENT=2
 FIND_REPOS_ALPHAXIV_MAX_CONCURRENT=4
 
-WORKER_POLL_SECONDS=1.0
-JOB_TIMEOUT_SECONDS=1800
+REFRESH_METADATA_GITHUB_MIN_INTERVAL=0.2
+REFRESH_METADATA_GITHUB_GRAPHQL_BATCH_SIZE=50
+REFRESH_METADATA_GITHUB_REST_FALLBACK_MAX_CONCURRENT=2
+
+JOB_QUEUE_WORKER_POLL_SECONDS=1.0
+JOB_QUEUE_RUNNING_TIMEOUT_SECONDS=1800
 ```
 
 ## Testing

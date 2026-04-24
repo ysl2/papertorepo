@@ -94,7 +94,6 @@ def test_cli_build_scope_rejects_empty_categories_for_sync_jobs(db_env):
         month=None,
         from_date=None,
         to_date=None,
-        max_results=None,
         force=False,
         output=None,
     )
@@ -111,7 +110,6 @@ def test_cli_build_scope_rejects_invalid_month(db_env):
         month="abcd",
         from_date=None,
         to_date=None,
-        max_results=None,
         force=False,
         output=None,
     )
@@ -128,7 +126,6 @@ def test_cli_build_scope_rejects_invalid_categories_format(db_env):
         month=None,
         from_date=None,
         to_date=None,
-        max_results=None,
         force=False,
         output=None,
     )

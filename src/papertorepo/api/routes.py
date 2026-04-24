@@ -38,7 +38,13 @@ from papertorepo.api.schemas import (
     ScopePayload,
 )
 from papertorepo.core.scope import build_scope_json
-from papertorepo.services.pipeline import get_dashboard_stats, get_job_queue_snapshot, scoped_papers, scoped_repos
+from papertorepo.services.pipeline import (
+    REFRESH_METADATA_GITHUB_ANONYMOUS_REST_MIN_INTERVAL_SECONDS,
+    get_dashboard_stats,
+    get_job_queue_snapshot,
+    scoped_papers,
+    scoped_repos,
+)
 
 
 def _scope_from_query(
@@ -48,7 +54,6 @@ def _scope_from_query(
     month: str | None,
     from_date: date | None,
     to_date: date | None,
-    max_results: int | None = None,
     force: bool = False,
     output_name: str | None = None,
 ) -> ScopePayload:
@@ -57,7 +62,6 @@ def _scope_from_query(
         day=day,
         month=month,
         **{"from": from_date, "to": to_date},
-        max_results=max_results,
         force=force,
         output_name=output_name,
     )
@@ -141,7 +145,6 @@ def _scope_json_from_query(
     month: str | None,
     from_date: date | None,
     to_date: date | None,
-    max_results: int | None = None,
     force: bool = False,
     output_name: str | None = None,
 ) -> dict[str, object]:
@@ -153,7 +156,6 @@ def _scope_json_from_query(
                 month=month,
                 from_date=from_date,
                 to_date=to_date,
-                max_results=max_results,
                 force=force,
                 output_name=output_name,
             )
@@ -172,7 +174,12 @@ def register_routes(app: FastAPI) -> None:
         settings = get_settings()
         github_auth_configured = bool(settings.github_token.strip())
         effective_github_min_interval_seconds = (
-            settings.github_min_interval if github_auth_configured else max(settings.github_min_interval, 60.0)
+            settings.refresh_metadata_github_min_interval
+            if github_auth_configured
+            else max(
+                settings.refresh_metadata_github_min_interval,
+                REFRESH_METADATA_GITHUB_ANONYMOUS_REST_MIN_INTERVAL_SECONDS,
+            )
         )
         return HealthRead(
             app_name=settings.app_name,
@@ -183,8 +190,8 @@ def register_routes(app: FastAPI) -> None:
             github_auth_configured=github_auth_configured,
             effective_github_min_interval_seconds=effective_github_min_interval_seconds,
             step_providers={
-                "sync_arxiv": ["arxiv_listing", "arxiv_export_api"],
-                "find_repos": ["arxiv_abs", "huggingface", "alphaxiv"],
+                "sync_papers": ["arxiv_listing", "arxiv_catchup", "arxiv_submitted_day", "arxiv_id_list"],
+                "find_repos": ["paper_comment", "paper_abstract", "alphaxiv_api", "alphaxiv_html", "huggingface_api"],
                 "refresh_metadata": ["github_api"],
             },
         )
@@ -329,9 +336,9 @@ def register_routes(app: FastAPI) -> None:
         except LookupError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
-    @router.post("/jobs/sync-arxiv", response_model=JobLaunchRead)
-    def enqueue_sync_arxiv(scope: ScopePayload, db: Session = Depends(get_db)) -> JobLaunchRead:
-        return _launch_sync_job(db, JobType.sync_arxiv, scope)
+    @router.post("/jobs/sync-papers", response_model=JobLaunchRead)
+    def enqueue_sync_papers(scope: ScopePayload, db: Session = Depends(get_db)) -> JobLaunchRead:
+        return _launch_sync_job(db, JobType.sync_papers, scope)
 
     @router.post("/jobs/find-repos", response_model=JobLaunchRead)
     def enqueue_find_repos(scope: ScopePayload, db: Session = Depends(get_db)) -> JobLaunchRead:

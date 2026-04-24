@@ -31,7 +31,6 @@ class ScopePayload(BaseModel):
     month: str | None = None
     from_date: date | None = Field(default=None, alias="from")
     to_date: date | None = Field(default=None, alias="to")
-    max_results: int | None = None
     force: bool = False
     export_mode: Literal["all_papers", "papers_view"] | None = None
     paper_ids: list[str] = Field(default_factory=list)
@@ -104,6 +103,8 @@ class ScopePayload(BaseModel):
             raise ValueError("day cannot be combined with month/from/to")
         if self.month and (self.day or self.from_date or self.to_date):
             raise ValueError("month cannot be combined with day/from/to")
+        if bool(self.from_date) != bool(self.to_date):
+            raise ValueError("from and to must be provided together")
         if self.from_date and self.to_date and self.from_date > self.to_date:
             raise ValueError("from must be <= to")
         if self.export_mode == "papers_view" and not self.paper_ids:
@@ -112,8 +113,8 @@ class ScopePayload(BaseModel):
 
 
 SYNC_JOB_TYPES_REQUIRING_CATEGORIES = {
-    JobType.sync_arxiv,
-    JobType.sync_arxiv_batch,
+    JobType.sync_papers,
+    JobType.sync_papers_batch,
     JobType.find_repos,
     JobType.find_repos_batch,
     JobType.refresh_metadata,
@@ -136,6 +137,8 @@ def normalized_categories(scope: ScopePayload) -> list[str]:
 def validate_scope_for_job(scope: ScopePayload, job_type: JobType) -> ScopePayload:
     if job_type in SYNC_JOB_TYPES_REQUIRING_CATEGORIES and not normalized_categories(scope):
         raise ValueError("categories is required for sync jobs")
+    if job_type in SYNC_JOB_TYPES_REQUIRING_CATEGORIES and not (scope.day or scope.month or (scope.from_date and scope.to_date)):
+        raise ValueError("time window is required for sync jobs")
     return scope
 
 

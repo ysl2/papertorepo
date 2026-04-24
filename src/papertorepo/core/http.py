@@ -11,10 +11,10 @@ import aiohttp
 
 HTTP_TOTAL_TIMEOUT = 20
 HTTP_CONNECT_TIMEOUT = 10
-MAX_RETRIES = 2
-RETRY_BASE_DELAY_SECONDS = 0.2
-RETRY_MAX_DELAY_SECONDS = 3.0
-RETRY_JITTER_RATIO = 0.1
+HTTP_MAX_RETRIES = 2
+HTTP_RETRY_BASE_DELAY_SECONDS = 0.2
+HTTP_RETRY_MAX_DELAY_SECONDS = 3.0
+HTTP_RETRY_JITTER_RATIO = 0.1
 
 
 class RateLimiter:
@@ -40,12 +40,12 @@ def build_timeout() -> aiohttp.ClientTimeout:
 
 
 def _retry_delay_seconds(attempt: int, response_headers: Mapping[str, str] | None = None) -> float:
-    base_delay = min(RETRY_MAX_DELAY_SECONDS, RETRY_BASE_DELAY_SECONDS * (2**attempt))
+    base_delay = min(HTTP_RETRY_MAX_DELAY_SECONDS, HTTP_RETRY_BASE_DELAY_SECONDS * (2**attempt))
 
     def _with_jitter(delay: float) -> float:
         if delay <= 0:
             return 0.0
-        jitter = delay * RETRY_JITTER_RATIO
+        jitter = delay * HTTP_RETRY_JITTER_RATIO
         return max(0.0, delay + random.uniform(-jitter, jitter))
 
     if not response_headers:
@@ -81,7 +81,7 @@ async def request_text(
     max_retries: int | None = None,
 ) -> tuple[int | None, str | None, dict[str, str], str | None]:
     allowed = allowed_statuses or set()
-    retry_limit = MAX_RETRIES if max_retries is None else max(0, max_retries)
+    retry_limit = HTTP_MAX_RETRIES if max_retries is None else max(0, max_retries)
     for attempt in range(retry_limit + 1):
         async with semaphore:
             await rate_limiter.acquire()

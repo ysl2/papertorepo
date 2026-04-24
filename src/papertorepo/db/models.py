@@ -16,8 +16,8 @@ def utc_now() -> datetime:
 
 
 class JobType(str, enum.Enum):
-    sync_arxiv = "sync_arxiv"
-    sync_arxiv_batch = "sync_arxiv_batch"
+    sync_papers = "sync_papers"
+    sync_papers_batch = "sync_papers_batch"
     find_repos = "find_repos"
     find_repos_batch = "find_repos_batch"
     refresh_metadata = "refresh_metadata"
@@ -105,7 +105,7 @@ class Paper(Base):
     source_last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     observations: Mapped[list["RepoObservation"]] = relationship(back_populates="paper", cascade="all, delete-orphan")
-    archive_appearances: Mapped[list["ArxivArchiveAppearance"]] = relationship(
+    archive_appearances: Mapped[list["SyncPapersArxivArchiveAppearance"]] = relationship(
         back_populates="paper",
         cascade="all, delete-orphan",
     )
@@ -158,22 +158,10 @@ class RepoObservation(Base):
     paper: Mapped[Paper] = relationship(back_populates="observations")
 
 
-class ArxivSyncWindow(Base):
-    __tablename__ = "arxiv_sync_windows"
+class SyncPapersArxivDay(Base):
+    __tablename__ = "sync_papers_arxiv_days"
     __table_args__ = (
-        Index("ix_arxiv_sync_windows_completed", "last_completed_at"),
-    )
-
-    category: Mapped[str] = mapped_column(String(64), primary_key=True)
-    start_date: Mapped[date] = mapped_column(Date, primary_key=True)
-    end_date: Mapped[date] = mapped_column(Date, primary_key=True)
-    last_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
-class ArxivSyncDay(Base):
-    __tablename__ = "arxiv_sync_days"
-    __table_args__ = (
-        Index("ix_arxiv_sync_days_completed", "last_completed_at"),
+        Index("ix_sync_papers_arxiv_days_completed", "last_completed_at"),
     )
 
     category: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -181,11 +169,11 @@ class ArxivSyncDay(Base):
     last_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
-class ArxivArchiveAppearance(Base):
-    __tablename__ = "arxiv_archive_appearances"
+class SyncPapersArxivArchiveAppearance(Base):
+    __tablename__ = "sync_papers_arxiv_archive_appearances"
     __table_args__ = (
-        Index("ix_arxiv_archive_appearances_month_arxiv", "archive_month", "arxiv_id"),
-        Index("ix_arxiv_archive_appearances_category_month", "category", "archive_month"),
+        Index("ix_sync_papers_arxiv_archive_appearances_month_arxiv", "archive_month", "arxiv_id"),
+        Index("ix_sync_papers_arxiv_archive_appearances_category_month", "category", "archive_month"),
     )
 
     arxiv_id: Mapped[str] = mapped_column(ForeignKey("papers.arxiv_id", ondelete="CASCADE"), primary_key=True)

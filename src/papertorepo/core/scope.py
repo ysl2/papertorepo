@@ -110,17 +110,16 @@ def resolve_archive_months_from_scope_json(scope_json: dict[str, object]) -> lis
     return resolve_archive_months(build_scope_payload(scope_json))
 
 
-def arxiv_scope_spans_multiple_months(scope_json: dict[str, object]) -> bool:
+def sync_papers_scope_spans_multiple_months(scope_json: dict[str, object]) -> bool:
     return len(resolve_archive_months_from_scope_json(scope_json)) > 1
 
 
-def expand_arxiv_child_scope_jsons(scope_json: dict[str, object]) -> list[dict[str, Any]]:
+def expand_sync_papers_child_scope_jsons(scope_json: dict[str, object]) -> list[dict[str, Any]]:
     categories = resolve_categories_from_scope_json(scope_json)
     archive_months = resolve_archive_months_from_scope_json(scope_json)
     if not categories or not archive_months:
         return []
 
-    max_results = scope_json.get("max_results")
     force = bool(scope_json.get("force"))
     child_scopes: list[dict[str, Any]] = []
     for category in categories:
@@ -130,7 +129,6 @@ def expand_arxiv_child_scope_jsons(scope_json: dict[str, object]) -> list[dict[s
                     ScopePayload(
                         categories=[category],
                         month=month_label(archive_month),
-                        max_results=max_results if isinstance(max_results, int) else None,
                         force=force,
                     )
                 )
@@ -206,7 +204,6 @@ def canonicalize_scope_payload(scope: ScopePayload) -> ScopePayload:
         day=day,
         month=month,
         **{"from": from_date, "to": to_date},
-        max_results=scope.max_results,
         force=scope.force,
         export_mode=scope.export_mode,
         paper_ids=paper_ids,
@@ -225,7 +222,6 @@ def build_scope_json(scope: ScopePayload) -> dict[str, object]:
         "month": canonical_scope.month,
         "from": None if canonical_scope.day or canonical_scope.month else window.start_date.isoformat() if window.start_date else None,
         "to": None if canonical_scope.day or canonical_scope.month else window.end_date.isoformat() if window.end_date else None,
-        "max_results": canonical_scope.max_results,
         "force": canonical_scope.force,
         "export_mode": canonical_scope.export_mode,
         "paper_ids": paper_ids,

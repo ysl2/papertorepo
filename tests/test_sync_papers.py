@@ -5,8 +5,8 @@ from datetime import date, datetime, timedelta, timezone
 import pytest
 
 from papertorepo.db.session import session_scope
-from papertorepo.db.models import ArxivArchiveAppearance, ArxivSyncDay, GitHubRepo, Paper, PaperRepoState, RawFetch, RepoStableStatus, utc_now
-from papertorepo.services.pipeline import backfill_arxiv_archive_appearances, get_dashboard_stats, run_sync_arxiv, scoped_repos
+from papertorepo.db.models import SyncPapersArxivArchiveAppearance, SyncPapersArxivDay, GitHubRepo, Paper, PaperRepoState, RawFetch, RepoStableStatus, utc_now
+from papertorepo.services.pipeline import backfill_sync_papers_arxiv_archive_appearances, get_dashboard_stats, run_sync_papers, scoped_repos
 
 
 def at_utc_midnight(value: date) -> datetime:
@@ -70,7 +70,7 @@ def _insert_scoped_paper(
 def _insert_archive_appearance(*, arxiv_id: str, category: str, archive_month: date) -> None:
     with session_scope() as db:
         db.add(
-            ArxivArchiveAppearance(
+            SyncPapersArxivArchiveAppearance(
                 arxiv_id=arxiv_id,
                 category=category,
                 archive_month=archive_month,
@@ -81,7 +81,7 @@ def _insert_archive_appearance(*, arxiv_id: str, category: str, archive_month: d
 def _insert_arxiv_sync_day(*, category: str, sync_day: date, last_completed_at: datetime) -> None:
     with session_scope() as db:
         db.add(
-            ArxivSyncDay(
+            SyncPapersArxivDay(
                 category=category,
                 sync_day=sync_day,
                 last_completed_at=last_completed_at,
@@ -90,7 +90,7 @@ def _insert_arxiv_sync_day(*, category: str, sync_day: date, last_completed_at: 
 
 
 @pytest.mark.anyio
-async def test_run_sync_arxiv_window_uses_listing_pages_and_keeps_archive_results(db_env, monkeypatch):
+async def test_run_sync_papers_window_uses_listing_pages_and_keeps_archive_results(db_env, monkeypatch):
     clients: list[object] = []
 
     class FakeClient:
@@ -124,13 +124,12 @@ async def test_run_sync_arxiv_window_uses_listing_pages_and_keeps_archive_result
     monkeypatch.setattr("papertorepo.services.pipeline.ArxivMetadataClient", FakeClient)
 
     with session_scope() as db:
-        stats = await run_sync_arxiv(
+        stats = await run_sync_papers(
             db,
             {
                 "categories": ["cs.CV"],
                 "from": "2025-03-15",
                 "to": "2025-04-10",
-                "max_results": None,
             },
         )
 
@@ -147,8 +146,8 @@ async def test_run_sync_arxiv_window_uses_listing_pages_and_keeps_archive_result
     with session_scope() as db:
         papers = db.query(Paper).order_by(Paper.arxiv_id.asc()).all()
         appearances = (
-            db.query(ArxivArchiveAppearance)
-            .order_by(ArxivArchiveAppearance.archive_month.asc(), ArxivArchiveAppearance.arxiv_id.asc())
+            db.query(SyncPapersArxivArchiveAppearance)
+            .order_by(SyncPapersArxivArchiveAppearance.archive_month.asc(), SyncPapersArxivArchiveAppearance.arxiv_id.asc())
             .all()
         )
         assert [paper.arxiv_id for paper in papers] == ["2503.00001", "2503.00002", "2504.00001"]
@@ -160,7 +159,7 @@ async def test_run_sync_arxiv_window_uses_listing_pages_and_keeps_archive_result
 
 
 @pytest.mark.anyio
-async def test_run_sync_arxiv_skips_range_month_when_requested_days_are_fresh(db_env, monkeypatch):
+async def test_run_sync_papers_skips_range_month_when_requested_days_are_fresh(db_env, monkeypatch):
     now = datetime(2026, 4, 20, 12, 0, tzinfo=timezone.utc)
     for sync_day in [date(2025, 3, day) for day in range(15, 32)]:
         _insert_arxiv_sync_day(category="cs.CV", sync_day=sync_day, last_completed_at=now - timedelta(days=10))
@@ -183,7 +182,7 @@ async def test_run_sync_arxiv_skips_range_month_when_requested_days_are_fresh(db
     monkeypatch.setattr("papertorepo.services.pipeline._today_utc", lambda: now.date())
 
     with session_scope() as db:
-        stats = await run_sync_arxiv(
+        stats = await run_sync_papers(
             db,
             {
                 "categories": ["cs.CV"],
@@ -200,7 +199,7 @@ async def test_run_sync_arxiv_skips_range_month_when_requested_days_are_fresh(db
 
 
 @pytest.mark.anyio
-async def test_run_sync_arxiv_force_bypasses_daily_ttl(db_env, monkeypatch):
+async def test_run_sync_papers_force_bypasses_daily_ttl(db_env, monkeypatch):
     now = datetime(2026, 4, 20, 12, 0, tzinfo=timezone.utc)
     for sync_day in [date(2025, 3, day) for day in range(1, 32)]:
         _insert_arxiv_sync_day(category="cs.CV", sync_day=sync_day, last_completed_at=now - timedelta(days=10))
@@ -226,7 +225,7 @@ async def test_run_sync_arxiv_force_bypasses_daily_ttl(db_env, monkeypatch):
     monkeypatch.setattr("papertorepo.services.pipeline._today_utc", lambda: now.date())
 
     with session_scope() as db:
-        stats = await run_sync_arxiv(
+        stats = await run_sync_papers(
             db,
             {
                 "categories": ["cs.CV"],
@@ -243,7 +242,7 @@ async def test_run_sync_arxiv_force_bypasses_daily_ttl(db_env, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_run_sync_arxiv_records_closed_window_completion(db_env, monkeypatch):
+async def test_run_sync_papers_records_closed_window_completion(db_env, monkeypatch):
     now = datetime(2026, 4, 20, 12, 0, tzinfo=timezone.utc)
 
     class FakeClient:
@@ -265,7 +264,7 @@ async def test_run_sync_arxiv_records_closed_window_completion(db_env, monkeypat
     monkeypatch.setattr("papertorepo.services.pipeline._today_utc", lambda: now.date())
 
     with session_scope() as db:
-        stats = await run_sync_arxiv(
+        stats = await run_sync_papers(
             db,
             {
                 "categories": ["cs.CV"],
@@ -279,7 +278,7 @@ async def test_run_sync_arxiv_records_closed_window_completion(db_env, monkeypat
     assert stats["listing_pages_fetched"] == 1
 
     with session_scope() as db:
-        rows = db.query(ArxivSyncDay).filter(ArxivSyncDay.category == "cs.CV").order_by(ArxivSyncDay.sync_day.asc()).all()
+        rows = db.query(SyncPapersArxivDay).filter(SyncPapersArxivDay.category == "cs.CV").order_by(SyncPapersArxivDay.sync_day.asc()).all()
 
     assert [row.sync_day for row in rows] == [date(2025, 3, day) for day in range(1, 32)]
     for row in rows:
@@ -291,7 +290,7 @@ async def test_run_sync_arxiv_records_closed_window_completion(db_env, monkeypat
 
 
 @pytest.mark.anyio
-async def test_run_sync_arxiv_range_checks_only_requested_days_within_month(db_env, monkeypatch):
+async def test_run_sync_papers_range_checks_only_requested_days_within_month(db_env, monkeypatch):
     now = datetime(2026, 4, 20, 12, 0, tzinfo=timezone.utc)
     for sync_day in [date(2026, 4, day) for day in range(1, 11)]:
         _insert_arxiv_sync_day(category="cs.CV", sync_day=sync_day, last_completed_at=now)
@@ -314,7 +313,7 @@ async def test_run_sync_arxiv_range_checks_only_requested_days_within_month(db_e
     monkeypatch.setattr("papertorepo.services.pipeline._today_utc", lambda: now.date())
 
     with session_scope() as db:
-        stats = await run_sync_arxiv(
+        stats = await run_sync_papers(
             db,
             {
                 "categories": ["cs.CV"],
@@ -329,7 +328,7 @@ async def test_run_sync_arxiv_range_checks_only_requested_days_within_month(db_e
 
 
 @pytest.mark.anyio
-async def test_run_sync_arxiv_recent_day_uses_catchup(db_env, monkeypatch):
+async def test_run_sync_papers_recent_day_uses_catchup(db_env, monkeypatch):
     now = datetime(2026, 4, 22, 12, 0, tzinfo=timezone.utc)
     calls: list[tuple[str, str]] = []
 
@@ -359,7 +358,7 @@ async def test_run_sync_arxiv_recent_day_uses_catchup(db_env, monkeypatch):
     monkeypatch.setattr("papertorepo.services.pipeline._today_utc", lambda: now.date())
 
     with session_scope() as db:
-        stats = await run_sync_arxiv(db, {"categories": ["cs.CV"], "day": "2026-04-20"})
+        stats = await run_sync_papers(db, {"categories": ["cs.CV"], "day": "2026-04-20"})
 
     assert stats["catchup_pages_fetched"] == 1
     assert stats["search_pages_fetched"] == 0
@@ -367,7 +366,7 @@ async def test_run_sync_arxiv_recent_day_uses_catchup(db_env, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_run_sync_arxiv_historical_day_uses_submitted_date_fallback(db_env, monkeypatch):
+async def test_run_sync_papers_historical_day_uses_submitted_date_fallback(db_env, monkeypatch):
     now = datetime(2026, 4, 22, 12, 0, tzinfo=timezone.utc)
     calls: list[tuple[str, str]] = []
 
@@ -398,7 +397,7 @@ async def test_run_sync_arxiv_historical_day_uses_submitted_date_fallback(db_env
     monkeypatch.setattr("papertorepo.services.pipeline._today_utc", lambda: now.date())
 
     with session_scope() as db:
-        stats = await run_sync_arxiv(db, {"categories": ["cs.CV"], "day": "2025-01-10"})
+        stats = await run_sync_papers(db, {"categories": ["cs.CV"], "day": "2025-01-10"})
 
     assert stats["search_pages_fetched"] == 1
     assert stats["catchup_pages_fetched"] == 0
@@ -570,7 +569,7 @@ def test_dashboard_stats_count_unknown_from_missing_and_unknown_repo_states(db_e
     assert stats["unknown"] == 2
 
 
-def test_backfill_arxiv_archive_appearances_uses_stored_listing_html(db_env):
+def test_backfill_sync_papers_arxiv_archive_appearances_uses_stored_listing_html(db_env):
     _insert_scoped_paper("2504.00001", date(2025, 4, 10))
     raw_dir = db_env / "data" / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
@@ -594,8 +593,8 @@ def test_backfill_arxiv_archive_appearances_uses_stored_listing_html(db_env):
         )
 
     with session_scope() as db:
-        stats = backfill_arxiv_archive_appearances(db)
-        appearances = db.query(ArxivArchiveAppearance).all()
+        stats = backfill_sync_papers_arxiv_archive_appearances(db)
+        appearances = db.query(SyncPapersArxivArchiveAppearance).all()
 
     assert stats["listing_fetches"] == 1
     assert stats["appearances_created"] == 1

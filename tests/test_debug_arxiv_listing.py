@@ -7,7 +7,7 @@ import pytest
 
 from papertorepo.services.debug_arxiv_listing import BASELINE_FIELDNAMES, compare_listing_baseline_against_db, generate_listing_baseline
 from papertorepo.db.session import session_scope
-from papertorepo.db.models import ArxivArchiveAppearance, Paper, utc_now
+from papertorepo.db.models import SyncPapersArxivArchiveAppearance, Paper, utc_now
 
 
 def at_utc_midnight(value: date) -> datetime:
@@ -115,8 +115,8 @@ def test_compare_listing_baseline_against_db_reports_missing_and_extra(db_env, t
                     source_first_seen_at=utc_now(),
                     source_last_seen_at=utc_now(),
                 ),
-                ArxivArchiveAppearance(arxiv_id="2503.00001", category="cs.CV", archive_month=date(2025, 3, 1)),
-                ArxivArchiveAppearance(arxiv_id="2503.00002", category="cs.CV", archive_month=date(2025, 3, 1)),
+                SyncPapersArxivArchiveAppearance(arxiv_id="2503.00001", category="cs.CV", archive_month=date(2025, 3, 1)),
+                SyncPapersArxivArchiveAppearance(arxiv_id="2503.00002", category="cs.CV", archive_month=date(2025, 3, 1)),
             ]
         )
 
@@ -137,7 +137,7 @@ def test_compare_listing_baseline_against_db_reports_missing_and_extra(db_env, t
                 source_last_seen_at=utc_now(),
             )
         )
-        db.add(ArxivArchiveAppearance(arxiv_id="2503.99999", category="cs.CV", archive_month=date(2025, 3, 1)))
+        db.add(SyncPapersArxivArchiveAppearance(arxiv_id="2503.99999", category="cs.CV", archive_month=date(2025, 3, 1)))
 
     with session_scope() as db:
         result = compare_listing_baseline_against_db(

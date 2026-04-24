@@ -150,19 +150,19 @@ def test_stop_batch_job_cascades_to_children_and_updates_batch_state(job_env):
     with session_scope() as db:
         parent = create_job(
             db,
-            JobType.sync_arxiv_batch,
+            JobType.sync_papers_batch,
             ScopePayload(categories=["cs.CV"], **{"from": date(2026, 4, 1), "to": date(2026, 5, 31)}),
         )
         parent.status = JobStatus.succeeded
         pending_child = create_job(
             db,
-            JobType.sync_arxiv,
+            JobType.sync_papers,
             ScopePayload(categories=["cs.CV"], month="2026-04"),
             parent_job_id=parent.id,
         )
         running_child = create_job(
             db,
-            JobType.sync_arxiv,
+            JobType.sync_papers,
             ScopePayload(categories=["cs.CV"], month="2026-05"),
             parent_job_id=parent.id,
         )
@@ -240,7 +240,7 @@ def test_job_queue_snapshot_prefers_child_job_over_running_batch_root(job_env):
     with session_scope() as db:
         parent = create_job(
             db,
-            JobType.sync_arxiv_batch,
+            JobType.sync_papers_batch,
             ScopePayload(categories=["cs.CV"], **{"from": date(2026, 4, 1), "to": date(2026, 5, 31)}),
         )
         parent.status = JobStatus.running
@@ -250,7 +250,7 @@ def test_job_queue_snapshot_prefers_child_job_over_running_batch_root(job_env):
 
         child = create_job(
             db,
-            JobType.sync_arxiv,
+            JobType.sync_papers,
             ScopePayload(categories=["cs.CV"], month="2026-04"),
             parent_job_id=parent.id,
         )
@@ -269,8 +269,8 @@ def test_job_queue_snapshot_prefers_child_job_over_running_batch_root(job_env):
 def test_job_display_order_prefers_newer_scope_when_created_at_matches(job_env):
     same_created_at = datetime(2026, 4, 21, 10, 0, 0, 123456, tzinfo=timezone.utc)
     with session_scope() as db:
-        april = create_job(db, JobType.sync_arxiv, ScopePayload(categories=["cs.CV"], month="2026-04"))
-        may = create_job(db, JobType.sync_arxiv, ScopePayload(categories=["cs.CV"], month="2026-05"))
+        april = create_job(db, JobType.sync_papers, ScopePayload(categories=["cs.CV"], month="2026-04"))
+        may = create_job(db, JobType.sync_papers, ScopePayload(categories=["cs.CV"], month="2026-05"))
         april.created_at = same_created_at
         may.created_at = same_created_at
         db.add_all([april, may])
@@ -284,8 +284,8 @@ def test_job_display_order_prefers_newer_scope_when_created_at_matches(job_env):
 def test_job_queue_snapshot_prefers_older_scope_when_created_at_matches(job_env):
     same_created_at = datetime(2026, 4, 21, 10, 0, 0, 123456, tzinfo=timezone.utc)
     with session_scope() as db:
-        april = create_job(db, JobType.sync_arxiv, ScopePayload(categories=["cs.CV"], month="2026-04"))
-        may = create_job(db, JobType.sync_arxiv, ScopePayload(categories=["cs.CV"], month="2026-05"))
+        april = create_job(db, JobType.sync_papers, ScopePayload(categories=["cs.CV"], month="2026-04"))
+        may = create_job(db, JobType.sync_papers, ScopePayload(categories=["cs.CV"], month="2026-05"))
         april.created_at = same_created_at
         may.created_at = same_created_at
         db.add_all([april, may])

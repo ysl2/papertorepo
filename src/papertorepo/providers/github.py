@@ -4,9 +4,13 @@ import asyncio
 
 import aiohttp
 
+from papertorepo.core.config import get_settings
 from papertorepo.core.records import GitHubRepoMetadata
 from papertorepo.core.http import RateLimiter, request_text
 from papertorepo.core.normalize.github import extract_owner_repo, normalize_github_url
+
+
+REFRESH_METADATA_GITHUB_ANONYMOUS_REST_MIN_INTERVAL_SECONDS = 60.0
 
 
 class GitHubClient:
@@ -15,13 +19,22 @@ class GitHubClient:
         session: aiohttp.ClientSession,
         *,
         github_token: str = "",
-        min_interval: float = 0.5,
-        max_concurrent: int = 2,
+        min_interval: float | None = None,
+        max_concurrent: int | None = None,
     ):
+        settings = get_settings()
+        effective_min_interval = settings.refresh_metadata_github_min_interval if min_interval is None else min_interval
+        effective_max_concurrent = (
+            settings.refresh_metadata_github_rest_fallback_max_concurrent if max_concurrent is None else max_concurrent
+        )
         self.session = session
         self.github_token = github_token
-        self.semaphore = asyncio.Semaphore(max_concurrent)
-        self.rate_limiter = RateLimiter(min_interval if github_token.strip() else max(min_interval, 60.0))
+        self.semaphore = asyncio.Semaphore(max(1, effective_max_concurrent))
+        self.rate_limiter = RateLimiter(
+            effective_min_interval
+            if github_token.strip()
+            else max(effective_min_interval, REFRESH_METADATA_GITHUB_ANONYMOUS_REST_MIN_INTERVAL_SECONDS)
+        )
 
     async def fetch_repo_metadata(self, normalized_github_url: str) -> tuple[GitHubRepoMetadata | None, str | None]:
         owner_repo = extract_owner_repo(normalized_github_url)
