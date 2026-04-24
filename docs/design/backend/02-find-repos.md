@@ -47,9 +47,9 @@
 
 因此，已经得到稳定结论且仍在有效期内的论文会被跳过。
 
-当前实现中，repo 链接结论的 TTL 固定为 7 天，还没有暴露成配置项。
+当前实现中，repo 链接结论的 TTL 为 7 天，并且暴露成用户配置项。
 
-这个固定 TTL 适用于已经形成稳定答案的三种状态：
+这个 TTL 适用于已经形成稳定答案的三种状态：
 
 - `found`
 - `not_found`
@@ -59,22 +59,22 @@
 
 系统按“先便宜、先直接、先更接近论文原文”的顺序寻找仓库：
 
-1. arXiv comment
-2. arXiv abs 页面
-3. Hugging Face paper API
-4. Hugging Face paper HTML
-5. AlphaXiv paper API
-6. AlphaXiv paper HTML
+1. 有稳定仓库链接，则直接用这个仓库链接，不再往下找了
+2. Paper.comment (由sync-arxiv过程可直接获得)
+3. Paper.abstract (由sync-arxiv过程可直接获得)
+4. AlphaXiv paper API
+5. AlphaXiv paper HTML
+6. Hugging Face paper API
 
-其中有两个短路规则：
+其中有短路规则：
 
-- 只要 comment 或 abs 已经得出 repo URL，就不再进入 Hugging Face / AlphaXiv
+- 只要前面的来源已经找到了一个 URL，就不继续往后找了
 - 只有在前面阶段还没得到最终 URL 时，才继续向后探测
 
 另外：
 
-- `HUGGINGFACE_ENABLED=false` 时，整条 Hugging Face 路径关闭
-- `ALPHAXIV_ENABLED=false` 时，整条 AlphaXiv 路径关闭
+- `HUGGINGFACE_ENABLED=false` 时，整条 Hugging Face 路径关闭，暴露成用户配置项，默认值true
+- `ALPHAXIV_ENABLED=false` 时，整条 AlphaXiv 路径关闭，暴露成用户配置项，默认值true
 
 ## 5. 观察结果与稳定状态
 
@@ -154,10 +154,9 @@
 - `HUGGINGFACE_TOKEN`
 - `ALPHAXIV_TOKEN`
 - `ARXIV_API_MIN_INTERVAL`
-- `HUGGINGFACE_MIN_INTERVAL`
-- `ALPHAXIV_MIN_INTERVAL`
+- `HUGGINGFACE_MIN_INTERVAL` 默认值为0.2秒
+- `ALPHAXIV_MIN_INTERVAL` 默认值为0.2秒
 - `FIND_REPOS_WORKER_CONCURRENCY`
-- `FIND_REPOS_ARXIV_MAX_CONCURRENT`
 - `FIND_REPOS_HUGGINGFACE_MAX_CONCURRENT`
 - `FIND_REPOS_HUGGINGFACE_HTML_MAX_CONCURRENT`
 - `FIND_REPOS_ALPHAXIV_MAX_CONCURRENT`
