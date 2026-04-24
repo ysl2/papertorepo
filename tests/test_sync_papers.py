@@ -4,8 +4,10 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
+from papertorepo.core.config import clear_settings_cache
 from papertorepo.db.session import session_scope
 from papertorepo.db.models import SyncPapersArxivArchiveAppearance, SyncPapersArxivDay, GitHubRepo, Paper, PaperRepoState, RawFetch, RepoStableStatus, utc_now
+import papertorepo.services.pipeline as pipeline
 from papertorepo.services.pipeline import backfill_sync_papers_arxiv_archive_appearances, get_dashboard_stats, run_sync_papers, scoped_repos
 
 
@@ -87,6 +89,63 @@ def _insert_arxiv_sync_day(*, category: str, sync_day: date, last_completed_at: 
                 last_completed_at=last_completed_at,
             )
         )
+
+
+@pytest.mark.anyio
+async def test_run_sync_papers_reuses_worker_arxiv_rate_limiter_across_runs(db_env, monkeypatch):
+    monkeypatch.setenv("SYNC_PAPERS_ARXIV_MIN_INTERVAL", "3.0")
+    clear_settings_cache()
+    pipeline._SYNC_PAPERS_ARXIV_RATE_LIMITERS.clear()
+    rate_limiters: list[object] = []
+
+    class FakeClient:
+        def __init__(self, *_args, **kwargs):
+            rate_limiters.append(kwargs["rate_limiter"])
+
+        async def fetch_listing_page(self, **_kwargs):
+            return 200, _listing_html([]), {"Content-Type": "text/html"}, None
+
+        async def fetch_id_list_feed(self, _arxiv_ids):
+            raise AssertionError("empty listing should not hydrate metadata")
+
+    monkeypatch.setattr("papertorepo.services.pipeline.ArxivMetadataClient", FakeClient)
+
+    with session_scope() as db:
+        await run_sync_papers(db, {"categories": ["cs.CV"], "month": "2025-03", "force": True})
+        await run_sync_papers(db, {"categories": ["cs.CV"], "month": "2025-04", "force": True})
+
+    assert len(rate_limiters) == 2
+    assert rate_limiters[0] is rate_limiters[1]
+
+
+@pytest.mark.anyio
+async def test_run_sync_papers_uses_distinct_arxiv_rate_limiter_when_interval_changes(db_env, monkeypatch):
+    pipeline._SYNC_PAPERS_ARXIV_RATE_LIMITERS.clear()
+    rate_limiters: list[object] = []
+
+    class FakeClient:
+        def __init__(self, *_args, **kwargs):
+            rate_limiters.append(kwargs["rate_limiter"])
+
+        async def fetch_listing_page(self, **_kwargs):
+            return 200, _listing_html([]), {"Content-Type": "text/html"}, None
+
+        async def fetch_id_list_feed(self, _arxiv_ids):
+            raise AssertionError("empty listing should not hydrate metadata")
+
+    monkeypatch.setattr("papertorepo.services.pipeline.ArxivMetadataClient", FakeClient)
+
+    with session_scope() as db:
+        monkeypatch.setenv("SYNC_PAPERS_ARXIV_MIN_INTERVAL", "3.0")
+        clear_settings_cache()
+        await run_sync_papers(db, {"categories": ["cs.CV"], "month": "2025-03", "force": True})
+
+        monkeypatch.setenv("SYNC_PAPERS_ARXIV_MIN_INTERVAL", "6.0")
+        clear_settings_cache()
+        await run_sync_papers(db, {"categories": ["cs.CV"], "month": "2025-04", "force": True})
+
+    assert len(rate_limiters) == 2
+    assert rate_limiters[0] is not rate_limiters[1]
 
 
 @pytest.mark.anyio

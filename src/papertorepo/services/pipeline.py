@@ -8,6 +8,7 @@ import re
 import struct
 import tempfile
 import time
+import weakref
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -69,6 +70,9 @@ SYNC_PAPERS_ARXIV_MAX_CONCURRENT = 1
 SYNC_PAPERS_ARXIV_LIST_ABS_LINK_PATTERN = re.compile(r'href\s*=\s*"/abs/([^"#?]+)"', re.IGNORECASE)
 REFRESH_METADATA_GITHUB_GRAPHQL_MAX_CONCURRENT = 1
 REFRESH_METADATA_GITHUB_GRAPHQL_TOPICS_FIRST = 20
+_SYNC_PAPERS_ARXIV_RATE_LIMITERS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[float, RateLimiter]] = (
+    weakref.WeakKeyDictionary()
+)
 ProgressCallback = Callable[[dict[str, Any]], None]
 StopCheck = Callable[[], None]
 
@@ -132,6 +136,17 @@ def _run_stop_check(stop_check: StopCheck | None) -> None:
 
 def _raw_store() -> RawCacheStore:
     return RawCacheStore(get_settings().raw_fetch_dir)
+
+
+def _sync_papers_arxiv_rate_limiter(min_interval: float) -> RateLimiter:
+    loop = asyncio.get_running_loop()
+    normalized_interval = max(0.0, min_interval)
+    rate_limiters = _SYNC_PAPERS_ARXIV_RATE_LIMITERS.setdefault(loop, {})
+    limiter = rate_limiters.get(normalized_interval)
+    if limiter is None:
+        limiter = RateLimiter(normalized_interval)
+        rate_limiters[normalized_interval] = limiter
+    return limiter
 
 
 def _coerce_utc(value: datetime | None) -> datetime | None:
@@ -1133,6 +1148,7 @@ async def run_sync_papers(
             session,
             min_interval=settings.sync_papers_arxiv_min_interval,
             max_concurrent=SYNC_PAPERS_ARXIV_MAX_CONCURRENT,
+            rate_limiter=_sync_papers_arxiv_rate_limiter(settings.sync_papers_arxiv_min_interval),
         )
 
         for unit in _plan_sync_papers_arxiv_units(scope_json, categories):

@@ -195,6 +195,14 @@
 - id_list_feed 批量回填的大小
 - listing / submitted-day 的分页大小
 
+`SYNC_PAPERS_ARXIV_MIN_INTERVAL` 的作用域是同一 worker 进程内、同一 event loop 内的 `sync-papers` arXiv 请求流。
+
+这意味着：
+
+- 同一个 batch folder 下的多个 child job 串行执行时，会共享同一个 arXiv 限速器
+- child job 边界不会重置 arXiv 请求间隔
+- 当前不提供跨 worker / 跨进程的数据库级全局限速
+
 `sync-papers` 不再有独立的 arXiv transient retry 配置，统一使用公共 HTTP 重试策略。
 
 ## 10. 当前写死但需要让用户知道的常量
