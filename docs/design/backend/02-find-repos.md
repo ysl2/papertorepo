@@ -27,7 +27,7 @@
 - `month`
 - `from` + `to`
 
-它不会像 `sync-arxiv` 一样支持“无时间窗口抓最新一页”的业务模式。它的输入前提是：系统里已经有论文。
+它不会像 `sync-papers` 一样同步新的论文。它的输入前提是：系统里已经有论文。
 
 ### 2.3 候选论文来源
 
@@ -47,7 +47,7 @@
 
 因此，已经得到稳定结论且仍在有效期内的论文会被跳过。
 
-当前实现中，repo 链接结论的 TTL 为 7 天，并且暴露成用户配置项。
+repo 链接结论的 TTL 为 7 天，并且暴露成用户配置项 `FIND_REPOS_LINK_TTL_DAYS`。
 
 这个 TTL 适用于已经形成稳定答案的三种状态：
 
@@ -57,14 +57,18 @@
 
 ## 4. 来源优先级与查找顺序
 
-系统按“先便宜、先直接、先更接近论文原文”的顺序寻找仓库：
+系统先执行前置跳过规则：
 
-1. 有稳定仓库链接，则直接用这个仓库链接，不再往下找了
-2. Paper.comment (由sync-arxiv过程可直接获得)
-3. Paper.abstract (由sync-arxiv过程可直接获得)
-4. AlphaXiv paper API
-5. AlphaXiv paper HTML
-6. Hugging Face paper API
+- 如果已有稳定仓库链接且仍未到期，则直接跳过，不再重新查找
+- 如果已经到期，或者 `force=true`，则进入重新查找流程
+
+重新查找时，系统按“先便宜、先直接、先更接近论文原文”的顺序寻找仓库：
+
+1. `Paper.comment`，由 `sync-papers` 过程可直接获得
+2. `Paper.abstract`，由 `sync-papers` 过程可直接获得
+3. AlphaXiv paper API
+4. AlphaXiv paper HTML
+5. Hugging Face paper API
 
 其中有短路规则：
 
@@ -73,8 +77,10 @@
 
 另外：
 
-- `HUGGINGFACE_ENABLED=false` 时，整条 Hugging Face 路径关闭，暴露成用户配置项，默认值true
-- `ALPHAXIV_ENABLED=false` 时，整条 AlphaXiv 路径关闭，暴露成用户配置项，默认值true
+- `FIND_REPOS_HUGGINGFACE_ENABLED=false` 时，整条 Hugging Face 路径关闭，默认值为 `true`
+- `FIND_REPOS_ALPHAXIV_ENABLED=false` 时，整条 AlphaXiv 路径关闭，默认值为 `true`
+
+`find-repos` 不再抓取 arXiv abs HTML，也不再抓取 Hugging Face HTML。
 
 ## 5. 观察结果与稳定状态
 
@@ -149,21 +155,39 @@
 
 ## 9. 关键配置项
 
-- `HUGGINGFACE_ENABLED`
-- `ALPHAXIV_ENABLED`
+- `FIND_REPOS_HUGGINGFACE_ENABLED`
+- `FIND_REPOS_ALPHAXIV_ENABLED`
 - `HUGGINGFACE_TOKEN`
 - `ALPHAXIV_TOKEN`
-- `ARXIV_API_MIN_INTERVAL`
-- `HUGGINGFACE_MIN_INTERVAL` 默认值为0.2秒
-- `ALPHAXIV_MIN_INTERVAL` 默认值为0.2秒
+- `FIND_REPOS_LINK_TTL_DAYS`
+- `FIND_REPOS_HUGGINGFACE_MIN_INTERVAL`，默认值为 `0.2` 秒
+- `FIND_REPOS_ALPHAXIV_MIN_INTERVAL`，默认值为 `0.2` 秒
 - `FIND_REPOS_WORKER_CONCURRENCY`
 - `FIND_REPOS_HUGGINGFACE_MAX_CONCURRENT`
-- `FIND_REPOS_HUGGINGFACE_HTML_MAX_CONCURRENT`
 - `FIND_REPOS_ALPHAXIV_MAX_CONCURRENT`
 
 它们分别影响：
 
 - 哪些外部来源启用
 - 是否带认证访问第三方服务
+- 稳定 repo 结论多久后需要重新查找
 - 各来源的请求节流速度
 - 任务内部的并发度
+
+`FIND_REPOS_ARXIV_MAX_CONCURRENT` 和 `FIND_REPOS_HUGGINGFACE_HTML_MAX_CONCURRENT` 不再存在。
+
+## 10. 当前写死但需要让用户知道的常量
+
+### 10.1 抽取规则内部常量
+
+`find-repos` 的 URL 抽取逻辑会使用若干内部正则和解析常量。
+
+这些常量不一定暴露给用户，但也必须遵守 `FIND_REPOS_...` 前缀规则。例如：
+
+- AlphaXiv payload / HTML 里识别 GitHub URL 的正则
+- Hugging Face paper API payload 里识别 GitHub repo 字段的解析规则
+- 从 `Paper.comment` 和 `Paper.abstract` 中抽取 GitHub URL 的规则
+
+### 10.2 provider HTML 路径删除
+
+由于新版来源顺序不再包含 arXiv abs HTML 和 Hugging Face HTML，相关 HTML 并发常量和请求间隔常量不应该继续存在。

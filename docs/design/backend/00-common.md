@@ -4,7 +4,7 @@
 
 这组 design 先只覆盖三条后端能力：
 
-- `sync-arxiv`：把 arXiv 论文同步进系统
+- `sync-papers`：把论文同步进系统；当前 provider 是 arXiv
 - `find-repos`：为论文寻找 GitHub 仓库链接
 - `refresh-metadata`：刷新已发现 GitHub 仓库的元数据
 
@@ -25,7 +25,7 @@
 - 发布时间、更新时间
 - 原始评论字段
 
-`sync-arxiv` 负责创建和更新它。
+`sync-papers` 负责创建和更新它。
 
 ### 2.2 PaperRepoState
 
@@ -72,7 +72,7 @@
 - `from` / `to`
 - `force`
 
-当前同步类任务都要求显式给出 `categories`和时间窗口。
+当前三条后端任务都要求显式给出 `categories` 和时间窗口。
 
 ### 3.2 时间窗口规则
 
@@ -123,7 +123,7 @@
 
 当一个 scope 太大时，系统不会直接把它当成一个扁平任务执行，而会先创建批量根任务，再拆成子任务：
 
-- `sync-arxiv`：按 `category x archive_month` 拆分
+- `sync-papers`：按 `category x archive_month` 拆分
 - `find-repos`：按月份优先拆分
 - `refresh-metadata`：按月份优先拆分
 
@@ -176,8 +176,8 @@
 - `DATABASE_URL`
 - `DATA_DIR`
 - `DEFAULT_CATEGORIES`
-- `WORKER_POLL_SECONDS`
-- `JOB_TIMEOUT_SECONDS`
+- `JOB_QUEUE_WORKER_POLL_SECONDS`
+- `JOB_QUEUE_RUNNING_TIMEOUT_SECONDS`
 
 这几个配置分别影响：
 
@@ -189,32 +189,64 @@
 
 后续 feature design 只补充各自专属配置，不再重复这部分。
 
-## 7. 当前写死但需要让用户知道的公共常量
+## 7. 公共常量命名原则
+
+无论常量是否暴露给用户，都按所属模块加前缀命名。
+
+规则如下：
+
+- `sync-papers` 相关常量使用 `SYNC_PAPERS_...` 或 `SYNC_PAPERS_ARXIV_...`
+- `find-repos` 相关常量使用 `FIND_REPOS_...`
+- `refresh-metadata` 相关常量使用 `REFRESH_METADATA_...`
+- 公共 HTTP 常量使用 `HTTP_...`
+- 公共任务队列常量使用 `JOB_QUEUE_...`
+- 停止任务相关常量使用 `JOB_STOP_...`
+
+这个规则同时适用于：
+
+- `.env` / `.env.example` 中暴露给用户的配置
+- 代码内部写死但不暴露给用户的常量
+- 以前 inline 的关键硬编码值
+
+token 相关配置例外：它们按外部平台集中命名，继续使用 `GITHUB_TOKEN`、`HUGGINGFACE_TOKEN`、`ALPHAXIV_TOKEN`。
+
+## 8. 当前写死但需要让用户知道的公共常量
 
 以下常量当前写死在代码里，还没有暴露成配置项，但会直接影响三条后端能力的运行行为。
 
-### 7.1 外部请求超时
+### 8.1 外部请求超时
 
 所有外部 HTTP 请求共用一套基础超时策略：
 
-- 总超时固定为 `20` 秒
-- 建连超时固定为 `10` 秒
+- `HTTP_TOTAL_TIMEOUT = 20` 秒
+- `HTTP_CONNECT_TIMEOUT = 10` 秒
 
 这意味着：
 
 - 第三方平台响应很慢时，请求不会无限等待
 - 但当前也不能通过配置把超时调大或调小
 
-### 7.2 外部请求重试
+### 8.2 外部请求重试
 
 系统默认采用统一的瞬时错误重试策略：
 
-- 默认最多重试 `2` 次
+- `HTTP_MAX_RETRIES = 2`
 - 只对超时、网络异常，以及 `429 / 500 / 502 / 503 / 504` 这类状态做重试
-- 退避从 `0.2` 秒开始，单次等待上限 `3.0` 秒，并带 `10%` 抖动
+- `HTTP_RETRY_BASE_DELAY_SECONDS = 0.2`
+- `HTTP_RETRY_MAX_DELAY_SECONDS = 3.0`
+- `HTTP_RETRY_JITTER_RATIO = 0.1`
 
 这意味着：
 
 - 并不是所有失败都会自动重试
 - 对限流和临时故障有基础恢复能力
 - 但当前重试强度本身不是用户可配置项
+
+### 8.3 队列内部常量
+
+任务队列还有少量内部常量：
+
+- `JOB_QUEUE_INIT_DATABASE_LOCK_ID`
+- `JOB_QUEUE_REUSED_CHILD_LOCKED_BY`
+
+它们不需要暴露给用户，但也需要遵守公共前缀规则。
