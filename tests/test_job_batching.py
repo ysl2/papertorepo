@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 import pytest
@@ -13,6 +13,7 @@ from papertorepo.jobs.queue import (
     create_sync_papers_job,
     create_sync_job,
     list_child_jobs,
+    list_jobs_read,
     process_job,
     rerun_job,
     serialize_job,
@@ -479,32 +480,85 @@ def test_list_jobs_root_only_excludes_child_jobs(db_env):
     assert all(row["parent_job_id"] is None for row in rows)
 
 
-def test_batch_child_jobs_default_order_prefers_newer_scope_when_created_at_matches(db_env):
+def _scope_label(scope_json: dict[str, object]) -> str:
+    return str(scope_json.get("day") or scope_json.get("month") or f"{scope_json.get('from')}..{scope_json.get('to')}")
+
+
+@pytest.mark.parametrize(
+    ("parent_job_type", "child_job_type"),
+    [
+        (JobType.sync_papers_batch, JobType.sync_papers),
+        (JobType.find_repos_batch, JobType.find_repos),
+        (JobType.refresh_metadata_batch, JobType.refresh_metadata),
+    ],
+)
+def test_batch_child_jobs_follow_descending_scope_time_for_all_batch_types(db_env, parent_job_type, child_job_type):
     same_created_at = datetime(2026, 4, 21, 10, 0, 0, 123456, tzinfo=timezone.utc)
     with session_scope() as db:
         parent = create_job(
             db,
-            JobType.sync_papers_batch,
+            parent_job_type,
             ScopePayload(categories=["cs.CV"], **{"from": date(2026, 4, 1), "to": date(2026, 5, 31)}),
+        )
+        planned_scopes = planned_child_scope_jsons(parent.job_type, parent.scope_json)
+        for child_scope_json in reversed(planned_scopes):
+            child = create_job(
+                db,
+                child_job_type,
+                ScopePayload.model_validate(child_scope_json),
+                parent_job_id=parent.id,
+            )
+            child.created_at = same_created_at
+            db.add(child)
+        parent.status = JobStatus.succeeded
+        db.add(parent)
+
+    with session_scope() as db:
+        children = list_child_jobs(db, parent.id)
+        rows = list_jobs_read(db, parent_job_id=parent.id, limit=10, view="latest")
+
+    expected_labels = ["2026-05", "2026-04"]
+    assert [_scope_label(child.scope_json) for child in children] == expected_labels
+    assert [_scope_label(row.scope_json) for row in rows] == expected_labels
+
+
+def test_batch_child_rerun_stays_in_original_scope_position(db_env):
+    with session_scope() as db:
+        parent = create_job(
+            db,
+            JobType.sync_papers_batch,
+            ScopePayload(categories=["cs.CV"], **{"from": date(2026, 3, 1), "to": date(2026, 4, 30)}),
+        )
+        planned_scopes = planned_child_scope_jsons(parent.job_type, parent.scope_json)
+        march = create_job(
+            db,
+            JobType.sync_papers,
+            ScopePayload.model_validate(planned_scopes[0]),
+            parent_job_id=parent.id,
         )
         april = create_job(
             db,
             JobType.sync_papers,
-            ScopePayload(categories=["cs.CV"], month="2026-04"),
+            ScopePayload.model_validate(planned_scopes[1]),
             parent_job_id=parent.id,
         )
-        may = create_job(
-            db,
-            JobType.sync_papers,
-            ScopePayload(categories=["cs.CV"], month="2026-05"),
-            parent_job_id=parent.id,
-        )
+        march.status = JobStatus.failed
+        march.finished_at = march.created_at
+        april.status = JobStatus.succeeded
+        april.finished_at = april.created_at
         parent.status = JobStatus.succeeded
-        april.created_at = same_created_at
-        may.created_at = same_created_at
-        db.add_all([parent, april, may])
+        db.add_all([parent, march, april])
 
     with session_scope() as db:
-        children = list_child_jobs(db, parent.id)
+        rerun = rerun_job(db, march.id)
+        rerun.created_at = march.created_at + timedelta(minutes=10)
+        db.add(rerun)
 
-    assert [child.scope_json["month"] for child in children] == ["2026-05", "2026-04"]
+    with session_scope() as db:
+        latest_rows = list_jobs_read(db, parent_job_id=parent.id, limit=10, view="latest")
+        all_rows = list_jobs_read(db, parent_job_id=parent.id, limit=10, view="all")
+
+    assert [_scope_label(row.scope_json) for row in latest_rows] == ["2026-04", "2026-03"]
+    assert latest_rows[1].id == rerun.id
+    assert [_scope_label(row.scope_json) for row in all_rows] == ["2026-04", "2026-03", "2026-03"]
+    assert [row.id for row in all_rows[1:]] == [rerun.id, march.id]

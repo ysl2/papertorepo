@@ -673,40 +673,6 @@ function repairResumeSummary(job: Job) {
   return parts.length > 0 ? `Repair resume · ${parts.join(' · ')}` : null
 }
 
-function parseJobTime(value: string) {
-  const timestamp = Date.parse(value)
-  return Number.isNaN(timestamp) ? 0 : timestamp
-}
-
-function scopeWindowSortKeys(scope: Record<string, unknown>) {
-  const day = typeof scope.day === 'string' && scope.day ? scope.day : null
-  const month = typeof scope.month === 'string' && scope.month ? scope.month : null
-  const fromDate = typeof scope.from === 'string' && scope.from ? scope.from : null
-  const toDate = typeof scope.to === 'string' && scope.to ? scope.to : null
-  const monthStart = month ? `${month}-01` : null
-  const monthEnd = month ? `${month}-31` : null
-
-  return {
-    start: day || fromDate || monthStart || toDate || '',
-    end: day || toDate || monthEnd || fromDate || '',
-  }
-}
-
-function compareJobDisplayOrder(left: Pick<Job, 'created_at' | 'scope_json' | 'id'>, right: Pick<Job, 'created_at' | 'scope_json' | 'id'>) {
-  const createdDelta = parseJobTime(right.created_at) - parseJobTime(left.created_at)
-  if (createdDelta !== 0) return createdDelta
-
-  const leftScope = scopeWindowSortKeys(left.scope_json)
-  const rightScope = scopeWindowSortKeys(right.scope_json)
-  const startDelta = rightScope.start.localeCompare(leftScope.start)
-  if (startDelta !== 0) return startDelta
-
-  const endDelta = rightScope.end.localeCompare(leftScope.end)
-  if (endDelta !== 0) return endDelta
-
-  return right.id.localeCompare(left.id)
-}
-
 function shortId(value: string) {
   return value.slice(0, 8)
 }
@@ -2366,7 +2332,7 @@ function App() {
 
         if (!expandedParentJobSet.has(job.id)) continue
 
-        const childJobs = [...(childJobsByParentId[job.id] ?? [])].sort(compareJobDisplayOrder)
+        const childJobs = childJobsByParentId[job.id] ?? []
 
         for (const child of childJobs) {
           const childGroupKey = attemptGroupKey(child)
@@ -2686,10 +2652,7 @@ function App() {
   const paperTotalRows = Math.max(dashboard?.papers ?? 0, papers.length, papersLoadedCount)
   const paperProgressTotal = paperTotalRows > 0 ? paperTotalRows : undefined
   const selectedJobLatestChildren = useMemo(
-    () =>
-      selectedJobChildren
-        .filter((job) => isLatestAttempt(job))
-        .sort(compareJobDisplayOrder),
+    () => selectedJobChildren.filter((job) => isLatestAttempt(job)),
     [selectedJobChildren],
   )
 

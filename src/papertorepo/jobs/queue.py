@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import os
 import socket
 import uuid
-from datetime import timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from collections.abc import Callable
 
@@ -22,7 +22,12 @@ from papertorepo.jobs.batches import (
     planned_child_scope_jsons,
     should_create_batch_root,
 )
-from papertorepo.jobs.ordering import job_display_order_by, job_display_sort_key, job_execution_order_by
+from papertorepo.jobs.ordering import (
+    job_display_order_by,
+    job_display_sort_key,
+    job_execution_order_by,
+    job_scope_window_sort_keys,
+)
 from papertorepo.jobs.stop import JobStopRequested, mark_job_cancelled, raise_if_job_stop_requested, request_job_stop
 from papertorepo.db.models import Job, JobAttemptMode, JobStatus, JobType, SyncPapersArxivRequestCheckpoint, utc_now
 from papertorepo.core.scope import build_scope_json, build_scope_payload, build_dedupe_key
@@ -246,6 +251,70 @@ def _planned_batch_child_scopes(job: Job) -> list[dict[str, Any]]:
     return planned_child_scope_jsons(job.job_type, job.scope_json)
 
 
+def _created_at_desc_sort_key(value: datetime | None) -> float:
+    if value is None:
+        return float("inf")
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    else:
+        value = value.astimezone(timezone.utc)
+    return -value.timestamp()
+
+
+def _scope_window_desc_sort_key(value: str) -> int:
+    if not value:
+        return 0
+    try:
+        return -date.fromisoformat(value).toordinal()
+    except ValueError:
+        return 0
+
+
+def _batch_child_display_data_by_dedupe_key(parent_job: Job) -> dict[str, tuple[int, str, str]]:
+    child_job_type = batch_child_job_type_for_root(parent_job.job_type)
+    if child_job_type is None:
+        return {}
+    result: dict[str, tuple[int, str, str]] = {}
+    for index, child_scope_json in enumerate(_planned_batch_child_scopes(parent_job)):
+        start_key, end_key = job_scope_window_sort_keys(child_scope_json)
+        result[build_dedupe_key(child_job_type.value, child_scope_json)] = (index, start_key, end_key)
+    return result
+
+
+def _batch_child_scope_sort_key(
+    child_job: Job,
+    display_data_by_dedupe_key: dict[str, tuple[int, str, str]],
+) -> tuple[int, int, int, int, float, str]:
+    display_data = display_data_by_dedupe_key.get(child_job.dedupe_key)
+    if display_data is None:
+        start_key, end_key = job_scope_window_sort_keys(child_job.scope_json or {})
+        return (
+            1,
+            _scope_window_desc_sort_key(start_key),
+            _scope_window_desc_sort_key(end_key),
+            len(display_data_by_dedupe_key),
+            _created_at_desc_sort_key(child_job.created_at),
+            child_job.id,
+        )
+    scope_order, start_key, end_key = display_data
+    return (
+        0,
+        _scope_window_desc_sort_key(start_key),
+        _scope_window_desc_sort_key(end_key),
+        scope_order,
+        _created_at_desc_sort_key(child_job.created_at),
+        child_job.id,
+    )
+
+
+def _sort_batch_child_jobs(parent_job: Job, child_jobs: list[Job]) -> list[Job]:
+    display_data_by_dedupe_key = _batch_child_display_data_by_dedupe_key(parent_job)
+    return sorted(
+        child_jobs,
+        key=lambda child_job: _batch_child_scope_sort_key(child_job, display_data_by_dedupe_key),
+    )
+
+
 def _child_summary_for_batch(job: Job, child_jobs: list[Job]) -> ChildSummary:
     latest_jobs = _latest_jobs_by_dedupe(child_jobs)
     planned_total = len(_planned_batch_child_scopes(job))
@@ -386,7 +455,13 @@ def _create_reused_child_record(
 
 
 def list_child_jobs(db: Session, parent_job_id: str) -> list[Job]:
-    return list(db.scalars(select(Job).where(Job.parent_job_id == parent_job_id).order_by(*job_display_order_by())))
+    child_jobs = list(
+        db.scalars(select(Job).where(Job.parent_job_id == parent_job_id).order_by(*job_display_order_by()))
+    )
+    parent_job = db.get(Job, parent_job_id)
+    if parent_job is None or not _job_is_batch_root(parent_job):
+        return child_jobs
+    return _sort_batch_child_jobs(parent_job, child_jobs)
 
 
 def _serialize_dt(value: object) -> str | None:
@@ -480,8 +555,15 @@ def list_jobs_read(
         stmt = stmt.where(Job.parent_job_id == parent_job_id)
     if view == "latest":
         stmt = stmt.where(attempt_meta.c.attempt_rank == 1)
-    stmt = stmt.order_by(*job_display_order_by()).limit(limit)
-    rows = list(db.execute(stmt).all())
+    parent_job = db.get(Job, parent_job_id) if parent_job_id is not None else None
+    if parent_job is not None and _job_is_batch_root(parent_job):
+        rows = list(db.execute(stmt).all())
+        display_data_by_dedupe_key = _batch_child_display_data_by_dedupe_key(parent_job)
+        rows.sort(key=lambda row: _batch_child_scope_sort_key(row[0], display_data_by_dedupe_key))
+        rows = rows[:limit]
+    else:
+        stmt = stmt.order_by(*job_display_order_by()).limit(limit)
+        rows = list(db.execute(stmt).all())
     jobs = [row[0] for row in rows]
     attempt_meta_by_id = {
         row[0].id: JobAttemptMeta(attempt_count=int(row.attempt_count), attempt_rank=int(row.attempt_rank)) for row in rows
