@@ -4,9 +4,9 @@ from datetime import datetime, timezone
 
 import pytest
 
-from papertorepo.jobs.queue import claim_next_job, create_job, process_job
+from papertorepo.jobs.queue import claim_next_job, create_job, process_job, serialize_job
 from papertorepo.db.session import session_scope
-from papertorepo.db.models import Job, JobStatus, JobType
+from papertorepo.db.models import Job, JobAttemptMode, JobStatus, JobType, SyncPapersArxivRequestCheckpoint
 from papertorepo.api.schemas import ScopePayload
 from papertorepo.services.pipeline import run_sync_papers
 
@@ -96,7 +96,9 @@ async def test_process_job_failure_keeps_partial_stats(db_env, monkeypatch):
     assert claimed is not None
     assert claimed.id == job.id
 
-    async def fake_run_sync_papers(_db, _scope_json, *, progress=None, stop_check=None):
+    async def fake_run_sync_papers(_db, _scope_json, **kwargs):
+        progress = kwargs.get("progress")
+        stop_check = kwargs.get("stop_check")
         assert progress is not None
         _ = stop_check
         progress({"categories": 1, "pages_fetched": 3})
@@ -113,6 +115,70 @@ async def test_process_job_failure_keeps_partial_stats(db_env, monkeypatch):
         assert refreshed.stats_json == {"categories": 1, "pages_fetched": 3}
         assert refreshed.error_text == "boom"
         assert refreshed.locked_at is not None
+
+
+def test_serialize_pending_sync_papers_repair_includes_resume_summary(db_env):
+    scope = ScopePayload(categories=["cs.CV"], month="2025-06", force=True)
+    with session_scope() as db:
+        failed = create_job(db, JobType.sync_papers, scope)
+        failed.status = JobStatus.failed
+        failed.stats_json = {
+            "pages_fetched": 22,
+            "listing_pages_fetched": 2,
+            "metadata_batches_fetched": 20,
+            "papers_upserted": 2000,
+        }
+        failed.error_text = "arXiv metadata id_list query error (429)"
+        failed.finished_at = datetime(2026, 4, 24, 11, 31, 33, tzinfo=timezone.utc)
+        db.add_all(
+            [
+                SyncPapersArxivRequestCheckpoint(
+                    attempt_series_key=failed.attempt_series_key,
+                    surface="listing_html",
+                    request_key="list:cs.CV:2025-06:0:2000",
+                    request_url="https://arxiv.org/list/cs.CV/2025-06?skip=0&show=2000",
+                    status_code=200,
+                    headers_json={},
+                    body_path="/tmp/listing.html",
+                    content_hash="listing",
+                    created_at=datetime(2026, 4, 24, 11, 30, tzinfo=timezone.utc),
+                    updated_at=datetime(2026, 4, 24, 11, 30, tzinfo=timezone.utc),
+                ),
+                SyncPapersArxivRequestCheckpoint(
+                    attempt_series_key=failed.attempt_series_key,
+                    surface="id_list_feed",
+                    request_key="id_batch:cs.CV:2025-06:abc:100",
+                    request_url="https://export.arxiv.org/api/query?id_list_batch=abc&count=100",
+                    status_code=200,
+                    headers_json={},
+                    body_path="/tmp/feed.xml",
+                    content_hash="feed",
+                    created_at=datetime(2026, 4, 24, 11, 31, tzinfo=timezone.utc),
+                    updated_at=datetime(2026, 4, 24, 11, 31, tzinfo=timezone.utc),
+                ),
+            ]
+        )
+        repair = create_job(
+            db,
+            JobType.sync_papers,
+            scope,
+            attempt_mode=JobAttemptMode.repair,
+            attempt_series_key=failed.attempt_series_key,
+        )
+        db.commit()
+
+        serialized = serialize_job(db, repair)
+
+    assert serialized.stats_json == {}
+    assert serialized.repair_resume_json is not None
+    assert serialized.repair_resume_json["previous_job_id"] == failed.id
+    assert serialized.repair_resume_json["previous_status"] == "failed"
+    assert serialized.repair_resume_json["previous_stats_json"]["pages_fetched"] == 22
+    assert serialized.repair_resume_json["checkpoints"]["total"] == 2
+    assert serialized.repair_resume_json["checkpoints"]["by_surface"] == {
+        "id_list_feed": 1,
+        "listing_html": 1,
+    }
 
 
 def test_claim_next_job_prefers_older_scope_when_created_at_matches(db_env):

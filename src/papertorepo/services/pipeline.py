@@ -9,7 +9,7 @@ import struct
 import tempfile
 import time
 import weakref
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -45,6 +45,7 @@ from papertorepo.db.models import (
     ExportRecord,
     GitHubRepo,
     Job,
+    JobAttemptMode,
     JobStatus,
     JobType,
     ObservationStatus,
@@ -53,6 +54,7 @@ from papertorepo.db.models import (
     RawFetch,
     RepoObservation,
     RepoStableStatus,
+    SyncPapersArxivRequestCheckpoint,
     utc_now,
 )
 from papertorepo.core.scope import (
@@ -86,6 +88,31 @@ class RawFetchEnvelope:
     status_code: int | None
     body: str | None
     headers: dict[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class SyncPapersCheckpointContext:
+    job_id: str | None
+    attempt_series_key: str | None
+    attempt_mode: JobAttemptMode | str
+
+    @property
+    def can_reuse(self) -> bool:
+        attempt_mode = self.attempt_mode.value if isinstance(self.attempt_mode, JobAttemptMode) else str(self.attempt_mode)
+        return self.attempt_series_key is not None and attempt_mode == JobAttemptMode.repair.value
+
+    @property
+    def can_store(self) -> bool:
+        return self.attempt_series_key is not None
+
+
+@dataclass(frozen=True, slots=True)
+class SyncPapersArxivResponse:
+    status: int | None
+    body: str | None
+    headers: dict[str, str]
+    error: str | None
+    reused_checkpoint: bool = False
 
 
 @dataclass(slots=True)
@@ -575,6 +602,129 @@ def _store_raw_fetch(
     return existing.id
 
 
+def _record_sync_papers_checkpoint_reuse(stats: dict[str, Any], surface: str) -> None:
+    stats["checkpoint_reused"] += 1
+    if surface == "id_list_feed":
+        stats["checkpoint_metadata_batches_reused"] += 1
+    else:
+        stats["checkpoint_pages_reused"] += 1
+
+
+def _load_sync_papers_arxiv_checkpoint(
+    db: Session,
+    context: SyncPapersCheckpointContext | None,
+    *,
+    surface: str,
+    request_key: str,
+) -> SyncPapersArxivResponse | None:
+    if context is None or not context.can_reuse:
+        return None
+    checkpoint = db.scalar(
+        select(SyncPapersArxivRequestCheckpoint).where(
+            SyncPapersArxivRequestCheckpoint.attempt_series_key == context.attempt_series_key,
+            SyncPapersArxivRequestCheckpoint.surface == surface,
+            SyncPapersArxivRequestCheckpoint.request_key == request_key,
+        )
+    )
+    if checkpoint is None:
+        return None
+    body_path = Path(checkpoint.body_path)
+    if not body_path.exists():
+        return None
+    return SyncPapersArxivResponse(
+        status=checkpoint.status_code,
+        body=body_path.read_text(encoding="utf-8"),
+        headers=dict(checkpoint.headers_json or {}),
+        error=None,
+        reused_checkpoint=True,
+    )
+
+
+def _store_sync_papers_arxiv_checkpoint(
+    db: Session,
+    context: SyncPapersCheckpointContext | None,
+    *,
+    surface: str,
+    request_key: str,
+    request_url: str,
+    raw_fetch_id: str | None,
+) -> None:
+    if context is None or not context.can_store or raw_fetch_id is None:
+        return
+    raw_fetch = db.get(RawFetch, raw_fetch_id)
+    if raw_fetch is None:
+        return
+    now = utc_now()
+    checkpoint = db.scalar(
+        select(SyncPapersArxivRequestCheckpoint).where(
+            SyncPapersArxivRequestCheckpoint.attempt_series_key == context.attempt_series_key,
+            SyncPapersArxivRequestCheckpoint.surface == surface,
+            SyncPapersArxivRequestCheckpoint.request_key == request_key,
+        )
+    )
+    if checkpoint is None:
+        checkpoint = SyncPapersArxivRequestCheckpoint(
+            attempt_series_key=str(context.attempt_series_key),
+            surface=surface,
+            request_key=request_key,
+            created_at=now,
+        )
+        db.add(checkpoint)
+    checkpoint.source_job_id = context.job_id
+    checkpoint.request_url = request_url
+    checkpoint.status_code = raw_fetch.status_code
+    checkpoint.content_type = raw_fetch.content_type
+    checkpoint.headers_json = dict(raw_fetch.headers_json or {})
+    checkpoint.body_path = raw_fetch.body_path
+    checkpoint.content_hash = raw_fetch.content_hash
+    checkpoint.raw_fetch_id = raw_fetch.id
+    checkpoint.updated_at = now
+    db.flush()
+
+
+async def _fetch_sync_papers_arxiv_request(
+    db: Session,
+    context: SyncPapersCheckpointContext | None,
+    *,
+    surface: str,
+    request_key: str,
+    request_url: str,
+    stats: dict[str, Any],
+    fetch: Callable[[], Awaitable[tuple[int | None, str | None, dict[str, str], str | None]]],
+) -> SyncPapersArxivResponse:
+    checkpoint = _load_sync_papers_arxiv_checkpoint(
+        db,
+        context,
+        surface=surface,
+        request_key=request_key,
+    )
+    if checkpoint is not None:
+        _record_sync_papers_checkpoint_reuse(stats, surface)
+        return checkpoint
+
+    status, body, headers, error = await fetch()
+    if error is None and body is not None and status is not None:
+        raw_fetch_id = _store_raw_fetch(
+            db,
+            provider="arxiv",
+            surface=surface,
+            request_key=request_key,
+            request_url=request_url,
+            status_code=status,
+            body=body,
+            headers=headers,
+        )
+        _store_sync_papers_arxiv_checkpoint(
+            db,
+            context,
+            surface=surface,
+            request_key=request_key,
+            request_url=request_url,
+            raw_fetch_id=raw_fetch_id,
+        )
+    return SyncPapersArxivResponse(status=status, body=body, headers=headers, error=error)
+
+
 def _hash_lock_key(value: str) -> int:
     digest = hashlib.sha256(value.encode("utf-8")).digest()[:8]
     return struct.unpack(">q", digest)[0]
@@ -820,7 +970,8 @@ async def _sync_papers_archive_month(
     *,
     category: str,
     archive_month: date,
-    stats: dict[str, int],
+    stats: dict[str, Any],
+    checkpoint_context: SyncPapersCheckpointContext | None = None,
     progress: ProgressCallback | None = None,
     stop_check: StopCheck | None = None,
 ) -> None:
@@ -829,32 +980,33 @@ async def _sync_papers_archive_month(
     skip = 0
     while True:
         _run_stop_check(stop_check)
+        request_key = f"list:{category}:{period}:{skip}:{page_size}"
+        request_url = f"https://arxiv.org/list/{category}/{period}?skip={skip}&show={page_size}"
         started = time.perf_counter()
-        status, body, headers, error = await client.fetch_listing_page(
-            category=category,
-            period=period,
-            skip=skip,
-            show=page_size,
+        response = await _fetch_sync_papers_arxiv_request(
+            db,
+            checkpoint_context,
+            surface="listing_html",
+            request_key=request_key,
+            request_url=request_url,
+            stats=stats,
+            fetch=lambda: client.fetch_listing_page(
+                category=category,
+                period=period,
+                skip=skip,
+                show=page_size,
+            ),
         )
         stats["stage_seconds"]["listing_fetch"] += time.perf_counter() - started
-        if error or body is None or status is None:
-            raise RuntimeError(f"{category}: arXiv listing fetch failed for {period} ({error or 'empty response'})")
-        stats["pages_fetched"] += 1
-        stats["listing_pages_fetched"] += 1
-        stats["provider_counts"]["arxiv"]["listing_requests"] += 1
-        _store_raw_fetch(
-            db,
-            provider="arxiv",
-            surface="listing_html",
-            request_key=f"list:{category}:{period}:{skip}:{page_size}",
-            request_url=f"https://arxiv.org/list/{category}/{period}?skip={skip}&show={page_size}",
-            status_code=status,
-            body=body,
-            headers=headers,
-        )
+        if response.error or response.body is None or response.status is None:
+            raise RuntimeError(f"{category}: arXiv listing fetch failed for {period} ({response.error or 'empty response'})")
+        if not response.reused_checkpoint:
+            stats["pages_fetched"] += 1
+            stats["listing_pages_fetched"] += 1
+            stats["provider_counts"]["arxiv"]["listing_requests"] += 1
         _emit_progress(progress, stats)
 
-        arxiv_ids = _extract_arxiv_ids_from_listing_html(body)
+        arxiv_ids = _extract_arxiv_ids_from_listing_html(response.body)
         if arxiv_ids:
             await _hydrate_arxiv_ids(
                 db,
@@ -864,6 +1016,7 @@ async def _sync_papers_archive_month(
                 arxiv_ids=arxiv_ids,
                 archive_month=archive_month,
                 stats=stats,
+                checkpoint_context=checkpoint_context,
                 progress=progress,
                 stop_check=stop_check,
             )
@@ -954,32 +1107,36 @@ async def _hydrate_arxiv_ids(
     arxiv_ids: list[str],
     archive_month: date | None,
     stats: dict[str, Any],
+    checkpoint_context: SyncPapersCheckpointContext | None = None,
     progress: ProgressCallback | None = None,
     stop_check: StopCheck | None = None,
 ) -> None:
     for batch in _batch_arxiv_ids(arxiv_ids):
         _run_stop_check(stop_check)
         batch_key = hashlib.sha1(",".join(batch).encode("utf-8")).hexdigest()[:16]
+        request_key = f"id_batch:{category}:{request_scope_label}:{batch_key}:{len(batch)}"
+        request_url = f"https://export.arxiv.org/api/query?id_list_batch={batch_key}&count={len(batch)}"
         started = time.perf_counter()
-        feed_status, feed_body, feed_headers, feed_error = await client.fetch_id_list_feed(batch)
-        stats["stage_seconds"]["metadata_fetch"] += time.perf_counter() - started
-        if feed_error or feed_body is None or feed_status is None:
-            raise RuntimeError(f"{category}: arXiv metadata batch fetch failed for {request_scope_label} ({feed_error or 'empty response'})")
-        stats["pages_fetched"] += 1
-        stats["metadata_batches_fetched"] += 1
-        stats["provider_counts"]["arxiv"]["metadata_requests"] += 1
-        _store_raw_fetch(
+        response = await _fetch_sync_papers_arxiv_request(
             db,
-            provider="arxiv",
+            checkpoint_context,
             surface="id_list_feed",
-            request_key=f"id_batch:{category}:{request_scope_label}:{batch_key}:{len(batch)}",
-            request_url=f"https://export.arxiv.org/api/query?id_list_batch={batch_key}&count={len(batch)}",
-            status_code=feed_status,
-            body=feed_body,
-            headers=feed_headers,
+            request_key=request_key,
+            request_url=request_url,
+            stats=stats,
+            fetch=lambda: client.fetch_id_list_feed(batch),
         )
+        stats["stage_seconds"]["metadata_fetch"] += time.perf_counter() - started
+        if response.error or response.body is None or response.status is None:
+            raise RuntimeError(
+                f"{category}: arXiv metadata batch fetch failed for {request_scope_label} ({response.error or 'empty response'})"
+            )
+        if not response.reused_checkpoint:
+            stats["pages_fetched"] += 1
+            stats["metadata_batches_fetched"] += 1
+            stats["provider_counts"]["arxiv"]["metadata_requests"] += 1
 
-        papers = parse_papers_from_feed(feed_body)
+        papers = parse_papers_from_feed(response.body)
         persist_started = time.perf_counter()
         for paper in papers:
             upsert_paper(db, paper)
@@ -1003,31 +1160,33 @@ async def _sync_papers_catchup_day(
     category: str,
     sync_day: date,
     stats: dict[str, Any],
+    checkpoint_context: SyncPapersCheckpointContext | None = None,
     progress: ProgressCallback | None = None,
     stop_check: StopCheck | None = None,
 ) -> None:
     _run_stop_check(stop_check)
+    request_key = f"catchup:{category}:{sync_day.isoformat()}"
+    request_url = f"https://arxiv.org/catchup/{category}/{sync_day.isoformat()}"
     started = time.perf_counter()
-    status, body, headers, error = await client.fetch_catchup_page(category=category, day=sync_day)
-    stats["stage_seconds"]["catchup_fetch"] += time.perf_counter() - started
-    if error or body is None or status is None:
-        raise RuntimeError(f"{category}: arXiv catchup fetch failed for {sync_day.isoformat()} ({error or 'empty response'})")
-    stats["pages_fetched"] += 1
-    stats["catchup_pages_fetched"] += 1
-    stats["provider_counts"]["arxiv"]["catchup_requests"] += 1
-    _store_raw_fetch(
+    response = await _fetch_sync_papers_arxiv_request(
         db,
-        provider="arxiv",
+        checkpoint_context,
         surface="catchup_html",
-        request_key=f"catchup:{category}:{sync_day.isoformat()}",
-        request_url=f"https://arxiv.org/catchup/{category}/{sync_day.isoformat()}",
-        status_code=status,
-        body=body,
-        headers=headers,
+        request_key=request_key,
+        request_url=request_url,
+        stats=stats,
+        fetch=lambda: client.fetch_catchup_page(category=category, day=sync_day),
     )
+    stats["stage_seconds"]["catchup_fetch"] += time.perf_counter() - started
+    if response.error or response.body is None or response.status is None:
+        raise RuntimeError(f"{category}: arXiv catchup fetch failed for {sync_day.isoformat()} ({response.error or 'empty response'})")
+    if not response.reused_checkpoint:
+        stats["pages_fetched"] += 1
+        stats["catchup_pages_fetched"] += 1
+        stats["provider_counts"]["arxiv"]["catchup_requests"] += 1
     _emit_progress(progress, stats)
 
-    arxiv_ids = _extract_arxiv_ids_from_listing_html(body)
+    arxiv_ids = _extract_arxiv_ids_from_listing_html(response.body)
     if not arxiv_ids:
         return
     await _hydrate_arxiv_ids(
@@ -1038,6 +1197,7 @@ async def _sync_papers_catchup_day(
         arxiv_ids=arxiv_ids,
         archive_month=month_start(sync_day),
         stats=stats,
+        checkpoint_context=checkpoint_context,
         progress=progress,
         stop_check=stop_check,
     )
@@ -1050,6 +1210,7 @@ async def _sync_papers_submitted_day(
     category: str,
     sync_day: date,
     stats: dict[str, Any],
+    checkpoint_context: SyncPapersCheckpointContext | None = None,
     progress: ProgressCallback | None = None,
     stop_check: StopCheck | None = None,
 ) -> None:
@@ -1057,32 +1218,35 @@ async def _sync_papers_submitted_day(
     start = 0
     while True:
         _run_stop_check(stop_check)
+        request_key = f"submitted_day:{category}:{sync_day.isoformat()}:{start}:{page_size}"
+        request_url = f"https://export.arxiv.org/api/query?search_query=submitted_day:{category}:{sync_day.isoformat()}"
         started = time.perf_counter()
-        status, body, headers, error = await client.fetch_submitted_day_page(
-            category=category,
-            day=sync_day,
-            start=start,
-            max_results=page_size,
+        response = await _fetch_sync_papers_arxiv_request(
+            db,
+            checkpoint_context,
+            surface="submitted_day_feed",
+            request_key=request_key,
+            request_url=request_url,
+            stats=stats,
+            fetch=lambda: client.fetch_submitted_day_page(
+                category=category,
+                day=sync_day,
+                start=start,
+                max_results=page_size,
+            ),
         )
         stats["stage_seconds"]["search_fetch"] += time.perf_counter() - started
-        if error or body is None or status is None:
-            raise RuntimeError(f"{category}: arXiv submittedDate fetch failed for {sync_day.isoformat()} ({error or 'empty response'})")
-        stats["pages_fetched"] += 1
-        stats["search_pages_fetched"] += 1
-        stats["provider_counts"]["arxiv"]["search_requests"] += 1
-        _store_raw_fetch(
-            db,
-            provider="arxiv",
-            surface="submitted_day_feed",
-            request_key=f"submitted_day:{category}:{sync_day.isoformat()}:{start}:{page_size}",
-            request_url=f"https://export.arxiv.org/api/query?search_query=submitted_day:{category}:{sync_day.isoformat()}",
-            status_code=status,
-            body=body,
-            headers=headers,
-        )
+        if response.error or response.body is None or response.status is None:
+            raise RuntimeError(
+                f"{category}: arXiv submittedDate fetch failed for {sync_day.isoformat()} ({response.error or 'empty response'})"
+            )
+        if not response.reused_checkpoint:
+            stats["pages_fetched"] += 1
+            stats["search_pages_fetched"] += 1
+            stats["provider_counts"]["arxiv"]["search_requests"] += 1
         _emit_progress(progress, stats)
 
-        arxiv_ids = parse_arxiv_ids_from_feed(body)
+        arxiv_ids = parse_arxiv_ids_from_feed(response.body)
         if not arxiv_ids:
             break
         await _hydrate_arxiv_ids(
@@ -1093,6 +1257,7 @@ async def _sync_papers_submitted_day(
             arxiv_ids=arxiv_ids,
             archive_month=month_start(sync_day),
             stats=stats,
+            checkpoint_context=checkpoint_context,
             progress=progress,
             stop_check=stop_check,
         )
@@ -1105,6 +1270,9 @@ async def run_sync_papers(
     db: Session,
     scope_json: dict[str, Any],
     *,
+    job_id: str | None = None,
+    attempt_series_key: str | None = None,
+    attempt_mode: JobAttemptMode | str = JobAttemptMode.fresh,
     progress: ProgressCallback | None = None,
     stop_check: StopCheck | None = None,
 ) -> dict[str, Any]:
@@ -1122,6 +1290,9 @@ async def run_sync_papers(
         "listing_pages_fetched": 0,
         "catchup_pages_fetched": 0,
         "metadata_batches_fetched": 0,
+        "checkpoint_reused": 0,
+        "checkpoint_pages_reused": 0,
+        "checkpoint_metadata_batches_reused": 0,
         "categories_skipped_locked": 0,
         "windows_skipped_ttl": 0,
         "provider_counts": {
@@ -1142,6 +1313,11 @@ async def run_sync_papers(
     }
     _update_runtime_stats(stats, started_at=started_at, processed_key="papers_upserted", throughput_key="papers_per_minute")
     _emit_progress(progress, stats)
+    checkpoint_context = SyncPapersCheckpointContext(
+        job_id=job_id,
+        attempt_series_key=attempt_series_key,
+        attempt_mode=attempt_mode,
+    )
 
     async with aiohttp.ClientSession(timeout=build_timeout()) as session:
         client = ArxivMetadataClient(
@@ -1178,6 +1354,7 @@ async def run_sync_papers(
                         category=unit.category,
                         archive_month=unit.fetch_month,
                         stats=stats,
+                        checkpoint_context=checkpoint_context,
                         progress=progress,
                         stop_check=stop_check,
                     )
@@ -1189,6 +1366,7 @@ async def run_sync_papers(
                         category=unit.category,
                         sync_day=unit.fetch_day,
                         stats=stats,
+                        checkpoint_context=checkpoint_context,
                         progress=progress,
                         stop_check=stop_check,
                     )
@@ -1200,6 +1378,7 @@ async def run_sync_papers(
                         category=unit.category,
                         sync_day=unit.fetch_day,
                         stats=stats,
+                        checkpoint_context=checkpoint_context,
                         progress=progress,
                         stop_check=stop_check,
                     )

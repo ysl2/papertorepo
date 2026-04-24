@@ -24,7 +24,7 @@ from papertorepo.jobs.batches import (
 )
 from papertorepo.jobs.ordering import job_display_order_by, job_display_sort_key, job_execution_order_by
 from papertorepo.jobs.stop import JobStopRequested, mark_job_cancelled, raise_if_job_stop_requested, request_job_stop
-from papertorepo.db.models import Job, JobAttemptMode, JobStatus, JobType, utc_now
+from papertorepo.db.models import Job, JobAttemptMode, JobStatus, JobType, SyncPapersArxivRequestCheckpoint, utc_now
 from papertorepo.core.scope import build_scope_json, build_scope_payload, build_dedupe_key
 from papertorepo.api.schemas import ChildSummary, JobRead, ScopePayload, validate_scope_for_job
 from papertorepo.services.pipeline import (
@@ -389,6 +389,58 @@ def list_child_jobs(db: Session, parent_job_id: str) -> list[Job]:
     return list(db.scalars(select(Job).where(Job.parent_job_id == parent_job_id).order_by(*job_display_order_by())))
 
 
+def _serialize_dt(value: object) -> str | None:
+    return value.isoformat() if hasattr(value, "isoformat") else None
+
+
+def _repair_resume_json(db: Session, job: Job) -> dict[str, Any] | None:
+    if job.job_type != JobType.sync_papers or job.attempt_mode != JobAttemptMode.repair:
+        return None
+
+    previous_attempt = db.scalar(
+        select(Job)
+        .where(
+            Job.attempt_series_key == job.attempt_series_key,
+            Job.id != job.id,
+            Job.created_at <= job.created_at,
+        )
+        .order_by(Job.created_at.desc(), Job.id.desc())
+    )
+    if previous_attempt is None:
+        return None
+
+    checkpoint_rows = list(
+        db.execute(
+            select(SyncPapersArxivRequestCheckpoint.surface, func.count(SyncPapersArxivRequestCheckpoint.id))
+            .where(SyncPapersArxivRequestCheckpoint.attempt_series_key == job.attempt_series_key)
+            .group_by(SyncPapersArxivRequestCheckpoint.surface)
+        ).all()
+    )
+    by_surface = {str(surface): int(count) for surface, count in checkpoint_rows}
+    checkpoint_window = db.execute(
+        select(
+            func.min(SyncPapersArxivRequestCheckpoint.created_at),
+            func.max(SyncPapersArxivRequestCheckpoint.updated_at),
+        ).where(SyncPapersArxivRequestCheckpoint.attempt_series_key == job.attempt_series_key)
+    ).one()
+
+    return {
+        "previous_job_id": previous_attempt.id,
+        "previous_status": previous_attempt.status.value,
+        "previous_error_text": previous_attempt.error_text,
+        "previous_created_at": _serialize_dt(previous_attempt.created_at),
+        "previous_started_at": _serialize_dt(previous_attempt.started_at),
+        "previous_finished_at": _serialize_dt(previous_attempt.finished_at),
+        "previous_stats_json": previous_attempt.stats_json,
+        "checkpoints": {
+            "total": sum(by_surface.values()),
+            "by_surface": by_surface,
+            "first_checkpoint_at": _serialize_dt(checkpoint_window[0]),
+            "last_checkpoint_at": _serialize_dt(checkpoint_window[1]),
+        },
+    }
+
+
 def _attempt_meta_subquery():
     partition_by = (Job.attempt_series_key,)
     stmt = select(
@@ -484,6 +536,7 @@ def serialize_job(
         scope_json=job.scope_json,
         dedupe_key=job.dedupe_key,
         stats_json=job.stats_json,
+        repair_resume_json=_repair_resume_json(db, job),
         error_text=job.error_text,
         stop_requested_at=job.stop_requested_at,
         stop_reason=job.stop_reason,
@@ -805,7 +858,15 @@ async def process_job(job_id: str) -> None:
         try:
             stop_check()
             if job.job_type == JobType.sync_papers:
-                job.stats_json = await run_sync_papers(db, job.scope_json, progress=persist_progress, stop_check=stop_check)
+                job.stats_json = await run_sync_papers(
+                    db,
+                    job.scope_json,
+                    job_id=job.id,
+                    attempt_series_key=job.attempt_series_key,
+                    attempt_mode=job.attempt_mode,
+                    progress=persist_progress,
+                    stop_check=stop_check,
+                )
             elif is_batch_root_job_type(job.job_type):
                 job.stats_json = await run_batch_root_job(db, job, progress=persist_progress, stop_check=stop_check)
             elif job.job_type == JobType.find_repos:

@@ -137,6 +137,35 @@ class RawFetch(Base):
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class SyncPapersArxivRequestCheckpoint(Base):
+    __tablename__ = "sync_papers_arxiv_request_checkpoints"
+    __table_args__ = (
+        Index(
+            "ix_sync_papers_arxiv_checkpoints_request",
+            "attempt_series_key",
+            "surface",
+            "request_key",
+            unique=True,
+        ),
+        Index("ix_sync_papers_arxiv_checkpoints_source_job", "source_job_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    attempt_series_key: Mapped[str] = mapped_column(String(36))
+    source_job_id: Mapped[str | None] = mapped_column(ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True)
+    surface: Mapped[str] = mapped_column(String(64))
+    request_key: Mapped[str] = mapped_column(String(255))
+    request_url: Mapped[str] = mapped_column(String(1024))
+    status_code: Mapped[int] = mapped_column(Integer)
+    content_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    headers_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    body_path: Mapped[str] = mapped_column(String(1024))
+    content_hash: Mapped[str] = mapped_column(String(128))
+    raw_fetch_id: Mapped[str | None] = mapped_column(ForeignKey("raw_fetches.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class RepoObservation(Base):
     __tablename__ = "repo_observations"
     __table_args__ = (

@@ -20,6 +20,13 @@ def _load_migration_module(file_name: str):
     return module
 
 
+def test_alembic_revision_ids_fit_postgresql_version_column():
+    version_dir = Path(__file__).resolve().parents[1] / "alembic" / "versions"
+    for migration_path in version_dir.glob("*.py"):
+        module = _load_migration_module(migration_path.name)
+        assert len(module.revision) <= 32, migration_path.name
+
+
 def test_sync_papers_postgresql_enum_rename_does_not_reupdate_old_labels(monkeypatch):
     module = _load_migration_module("0011_rename_sync_papers.py")
     executed_sql: list[str] = []

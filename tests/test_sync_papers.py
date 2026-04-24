@@ -6,7 +6,18 @@ import pytest
 
 from papertorepo.core.config import clear_settings_cache
 from papertorepo.db.session import session_scope
-from papertorepo.db.models import SyncPapersArxivArchiveAppearance, SyncPapersArxivDay, GitHubRepo, Paper, PaperRepoState, RawFetch, RepoStableStatus, utc_now
+from papertorepo.db.models import (
+    SyncPapersArxivArchiveAppearance,
+    SyncPapersArxivDay,
+    SyncPapersArxivRequestCheckpoint,
+    GitHubRepo,
+    JobAttemptMode,
+    Paper,
+    PaperRepoState,
+    RawFetch,
+    RepoStableStatus,
+    utc_now,
+)
 import papertorepo.services.pipeline as pipeline
 from papertorepo.services.pipeline import backfill_sync_papers_arxiv_archive_appearances, get_dashboard_stats, run_sync_papers, scoped_repos
 
@@ -215,6 +226,127 @@ async def test_run_sync_papers_window_uses_listing_pages_and_keeps_archive_resul
             ("2503.00002", "2025-03-01"),
             ("2504.00001", "2025-04-01"),
         ]
+
+
+@pytest.mark.anyio
+async def test_run_sync_papers_repair_reuses_arxiv_request_checkpoints(db_env, monkeypatch):
+    monkeypatch.setenv("SYNC_PAPERS_ARXIV_ID_BATCH_SIZE", "1")
+    clear_settings_cache()
+    phase = "fresh"
+    list_calls: list[tuple[str, str, str, int, int]] = []
+    id_calls: list[tuple[str, tuple[str, ...]]] = []
+    scope = {"categories": ["cs.CV"], "month": "2025-04", "force": True}
+    payload = {
+        "2504.00001": ("2504.00001", "2025-04-01", "First"),
+        "2504.00002": ("2504.00002", "2025-04-02", "Second"),
+        "2504.00003": ("2504.00003", "2025-04-03", "Third"),
+    }
+
+    class FakeClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def fetch_listing_page(self, *, category, period, skip=0, show=2000):
+            list_calls.append((phase, category, period, skip, show))
+            return 200, _listing_html(list(payload)), {"Content-Type": "text/html"}, None
+
+        async def fetch_id_list_feed(self, arxiv_ids):
+            batch = tuple(arxiv_ids)
+            id_calls.append((phase, batch))
+            if phase == "fresh" and batch == ("2504.00003",):
+                return 429, "rate limited", {}, "arXiv metadata id_list query error (429)"
+            return 200, _feed_xml([payload[item] for item in arxiv_ids]), {"Content-Type": "application/atom+xml"}, None
+
+    monkeypatch.setattr("papertorepo.services.pipeline.ArxivMetadataClient", FakeClient)
+
+    with session_scope() as db:
+        with pytest.raises(RuntimeError, match="429"):
+            await run_sync_papers(
+                db,
+                scope,
+                attempt_series_key="series-checkpoint",
+                attempt_mode=JobAttemptMode.fresh,
+            )
+
+        checkpoints = db.query(SyncPapersArxivRequestCheckpoint).order_by(SyncPapersArxivRequestCheckpoint.surface.asc()).all()
+        assert len(checkpoints) == 3
+        assert sorted(checkpoint.surface for checkpoint in checkpoints) == ["id_list_feed", "id_list_feed", "listing_html"]
+
+    phase = "repair"
+    with session_scope() as db:
+        stats = await run_sync_papers(
+            db,
+            scope,
+            attempt_series_key="series-checkpoint",
+            attempt_mode=JobAttemptMode.repair,
+        )
+
+    assert list_calls == [("fresh", "cs.CV", "2025-04", 0, 2000)]
+    assert id_calls == [
+        ("fresh", ("2504.00001",)),
+        ("fresh", ("2504.00002",)),
+        ("fresh", ("2504.00003",)),
+        ("repair", ("2504.00003",)),
+    ]
+    assert stats["checkpoint_reused"] == 3
+    assert stats["checkpoint_pages_reused"] == 1
+    assert stats["checkpoint_metadata_batches_reused"] == 2
+    assert stats["listing_pages_fetched"] == 0
+    assert stats["metadata_batches_fetched"] == 1
+
+    with session_scope() as db:
+        papers = db.query(Paper).order_by(Paper.arxiv_id.asc()).all()
+        assert [paper.arxiv_id for paper in papers] == ["2504.00001", "2504.00002", "2504.00003"]
+        days = db.query(SyncPapersArxivDay).filter(SyncPapersArxivDay.category == "cs.CV").all()
+        assert len(days) == 30
+
+
+@pytest.mark.anyio
+async def test_run_sync_papers_fresh_attempt_ignores_previous_checkpoints(db_env, monkeypatch):
+    monkeypatch.setenv("SYNC_PAPERS_ARXIV_ID_BATCH_SIZE", "1")
+    clear_settings_cache()
+    calls: list[tuple[str, tuple[str, ...] | None]] = []
+    phase = "first"
+    scope = {"categories": ["cs.CV"], "month": "2025-04", "force": True}
+
+    class FakeClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def fetch_listing_page(self, *, category, period, skip=0, show=2000):
+            calls.append((phase, None))
+            return 200, _listing_html(["2504.00001"]), {"Content-Type": "text/html"}, None
+
+        async def fetch_id_list_feed(self, arxiv_ids):
+            calls.append((phase, tuple(arxiv_ids)))
+            return 200, _feed_xml([("2504.00001", "2025-04-01", phase)]), {"Content-Type": "application/atom+xml"}, None
+
+    monkeypatch.setattr("papertorepo.services.pipeline.ArxivMetadataClient", FakeClient)
+
+    with session_scope() as db:
+        await run_sync_papers(
+            db,
+            scope,
+            attempt_series_key="first-series",
+            attempt_mode=JobAttemptMode.fresh,
+        )
+
+    phase = "second"
+    with session_scope() as db:
+        stats = await run_sync_papers(
+            db,
+            scope,
+            attempt_series_key="second-series",
+            attempt_mode=JobAttemptMode.fresh,
+        )
+
+    assert calls == [
+        ("first", None),
+        ("first", ("2504.00001",)),
+        ("second", None),
+        ("second", ("2504.00001",)),
+    ]
+    assert stats["checkpoint_reused"] == 0
 
 
 @pytest.mark.anyio

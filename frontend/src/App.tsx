@@ -52,6 +52,7 @@ type Job = {
   scope_json: Record<string, unknown>
   dedupe_key: string
   stats_json: Record<string, unknown>
+  repair_resume_json: Record<string, unknown> | null
   error_text: string | null
   stop_requested_at: string | null
   stop_reason: string | null
@@ -599,6 +600,79 @@ function reusedChildSummary(stats: Record<string, unknown>) {
   return `Reused from previous success · ${shortId(String(stats.reused_from_job_id))}`
 }
 
+function syncPapersStatsSummary(job: Job, emptyLabel: string) {
+  const stats = job.stats_json
+  const parts: string[] = []
+  const categories = numericStat(stats, 'categories')
+  const papersSaved = numericStat(stats, 'papers_upserted')
+  const pagesFetched = numericStat(stats, 'pages_fetched')
+  const listingPages = numericStat(stats, 'listing_pages_fetched')
+  const metadataBatches = numericStat(stats, 'metadata_batches_fetched')
+  const checkpointsReused = numericStat(stats, 'checkpoint_reused')
+  const checkpointPages = numericStat(stats, 'checkpoint_pages_reused')
+  const checkpointMetadataBatches = numericStat(stats, 'checkpoint_metadata_batches_reused')
+  const ttlSkips = numericStat(stats, 'windows_skipped_ttl')
+
+  if (categories !== null && categories > 0) parts.push(pluralize(categories, 'category', 'categories'))
+  if (papersSaved !== null && papersSaved > 0) parts.push(`${formatInteger(papersSaved)} papers saved`)
+  if (pagesFetched !== null && pagesFetched > 0) parts.push(pluralize(pagesFetched, 'remote request'))
+  if (listingPages !== null && listingPages > 0) parts.push(pluralize(listingPages, 'listing page'))
+  if (metadataBatches !== null && metadataBatches > 0) parts.push(pluralize(metadataBatches, 'metadata batch', 'metadata batches'))
+  if (checkpointsReused !== null && checkpointsReused > 0) {
+    const checkpointParts: string[] = []
+    if (checkpointPages !== null && checkpointPages > 0) checkpointParts.push(pluralize(checkpointPages, 'page'))
+    if (checkpointMetadataBatches !== null && checkpointMetadataBatches > 0) {
+      checkpointParts.push(pluralize(checkpointMetadataBatches, 'metadata batch', 'metadata batches'))
+    }
+    parts.push(`${pluralize(checkpointsReused, 'checkpoint reused', 'checkpoints reused')}${checkpointParts.length > 0 ? ` (${checkpointParts.join(', ')})` : ''}`)
+  }
+  if (ttlSkips !== null && ttlSkips > 0) parts.push(pluralize(ttlSkips, 'TTL skip'))
+
+  if (parts.length > 0) return parts.join(' · ')
+  return repairResumeSummary(job) || emptyLabel
+}
+
+function repairResumeSummary(job: Job) {
+  const resume = job.repair_resume_json
+  if (!resume) return null
+  const previousStats = resume.previous_stats_json
+  const previousStatsJson = previousStats && typeof previousStats === 'object' && !Array.isArray(previousStats) ? (previousStats as Record<string, unknown>) : {}
+  const checkpoints = resume.checkpoints
+  const checkpointJson = checkpoints && typeof checkpoints === 'object' && !Array.isArray(checkpoints) ? (checkpoints as Record<string, unknown>) : {}
+  const bySurface = checkpointJson.by_surface
+  const bySurfaceJson = bySurface && typeof bySurface === 'object' && !Array.isArray(bySurface) ? (bySurface as Record<string, unknown>) : {}
+
+  const parts: string[] = []
+  const totalCheckpoints = numericStat(checkpointJson, 'total')
+  const listingCheckpoints = numericStat(bySurfaceJson, 'listing_html')
+  const submittedDayCheckpoints = numericStat(bySurfaceJson, 'submitted_day_feed')
+  const catchupCheckpoints = numericStat(bySurfaceJson, 'catchup_html')
+  const metadataCheckpoints = numericStat(bySurfaceJson, 'id_list_feed')
+  const previousPages = numericStat(previousStatsJson, 'pages_fetched')
+  const previousListingPages = numericStat(previousStatsJson, 'listing_pages_fetched')
+  const previousMetadataBatches = numericStat(previousStatsJson, 'metadata_batches_fetched')
+  const previousPapers = numericStat(previousStatsJson, 'papers_upserted')
+
+  if (totalCheckpoints !== null && totalCheckpoints > 0) {
+    const checkpointParts: string[] = []
+    if (listingCheckpoints !== null && listingCheckpoints > 0) checkpointParts.push(pluralize(listingCheckpoints, 'listing checkpoint'))
+    if (submittedDayCheckpoints !== null && submittedDayCheckpoints > 0) checkpointParts.push(pluralize(submittedDayCheckpoints, 'submitted-day checkpoint'))
+    if (catchupCheckpoints !== null && catchupCheckpoints > 0) checkpointParts.push(pluralize(catchupCheckpoints, 'catchup checkpoint'))
+    if (metadataCheckpoints !== null && metadataCheckpoints > 0) checkpointParts.push(pluralize(metadataCheckpoints, 'metadata checkpoint'))
+    parts.push(`${formatInteger(totalCheckpoints)} reusable checkpoints${checkpointParts.length > 0 ? ` (${checkpointParts.join(', ')})` : ''}`)
+  }
+  if (previousPages !== null && previousPages > 0) parts.push(`${formatInteger(previousPages)} requests completed previously`)
+  if (previousListingPages !== null && previousListingPages > 0) parts.push(pluralize(previousListingPages, 'listing page'))
+  if (previousMetadataBatches !== null && previousMetadataBatches > 0) parts.push(pluralize(previousMetadataBatches, 'metadata batch', 'metadata batches'))
+  if (previousPapers !== null && previousPapers > 0) parts.push(`${formatInteger(previousPapers)} papers saved previously`)
+
+  const previousStatus = typeof resume.previous_status === 'string' ? resume.previous_status : null
+  const previousJobId = typeof resume.previous_job_id === 'string' ? resume.previous_job_id : null
+  if (parts.length === 0 && previousStatus) parts.push(`Previous attempt ${previousStatus}`)
+  if (previousJobId) parts.push(`from ${shortId(previousJobId)}`)
+  return parts.length > 0 ? `Repair resume · ${parts.join(' · ')}` : null
+}
+
 function parseJobTime(value: string) {
   const timestamp = Date.parse(value)
   return Number.isNaN(timestamp) ? 0 : timestamp
@@ -734,6 +808,7 @@ function jobSummary(job: Job) {
   if (job.error_text && displayStatus !== 'stopping') return job.error_text
   const reusedSummary = reusedChildSummary(job.stats_json)
   if (reusedSummary) return reusedSummary
+  const resumeSummary = repairResumeSummary(job)
   if (isBatchRootType(job.job_type)) {
     const batchAttempt = batchAttemptSummary(job)
     const childSummary = childSummaryLabel(job.child_summary)
@@ -743,7 +818,7 @@ function jobSummary(job: Job) {
     if (job.batch_state === 'cancelled') return job.error_text || `Stopped · ${combinedSummary}`
     return combinedSummary
   }
-  if (displayStatus === 'pending') return 'Queued'
+  if (displayStatus === 'pending') return resumeSummary ? `Queued · ${resumeSummary}` : 'Queued'
   if (displayStatus === 'stopping') {
     const statsSummary = summarizeStats(job.stats_json, 'Stop requested…')
     return statsSummary === 'Stop requested…' ? statsSummary : `Stopping · ${statsSummary}`
@@ -754,6 +829,20 @@ function jobSummary(job: Job) {
   }
   if (displayStatus === 'cancelled') return job.error_text || 'Stopped by user.'
   return summarizeStats(job.stats_json)
+}
+
+function jobStatsDetailSummary(job: Job) {
+  const reusedSummary = reusedChildSummary(job.stats_json)
+  if (reusedSummary) return reusedSummary
+
+  const emptyLabel =
+    jobDisplayStatus(job) === 'stopping' ? 'Stop requested…' : job.status === 'running' ? 'Starting…' : 'no stats yet'
+  if (job.job_type === 'sync_papers') return syncPapersStatsSummary(job, emptyLabel)
+  const statsSummary = summarizeStats(job.stats_json, emptyLabel)
+  const resumeSummary = repairResumeSummary(job)
+  if (!resumeSummary) return statsSummary
+  if (statsSummary === emptyLabel) return resumeSummary
+  return `${statsSummary} · ${resumeSummary}`
 }
 
 function isFinishedDisplayState(value: string) {
@@ -813,9 +902,11 @@ function queueJobProgressLabel(job: Job) {
       const parts: string[] = []
       if (papersSaved && papersSaved > 0) parts.push(`${formatInteger(papersSaved)} papers saved`)
       if (listingPages && listingPages > 0) parts.push(pluralize(listingPages, 'listing page'))
-      if (metadataBatches && metadataBatches > 0) parts.push(pluralize(metadataBatches, 'metadata batch'))
+      if (metadataBatches && metadataBatches > 0) parts.push(pluralize(metadataBatches, 'metadata batch', 'metadata batches'))
+      const checkpointsReused = numericStat(job.stats_json, 'checkpoint_reused')
+      if (checkpointsReused && checkpointsReused > 0) parts.push(pluralize(checkpointsReused, 'checkpoint reused', 'checkpoints reused'))
       if (ttlSkips && ttlSkips > 0) parts.push(pluralize(ttlSkips, 'TTL skip'))
-      return parts.join(' · ') || (displayStatus === 'stopping' ? 'Stop requested…' : 'Starting paper sync…')
+      return parts.join(' · ') || repairResumeSummary(job) || (displayStatus === 'stopping' ? 'Stop requested…' : 'Starting paper sync…')
     }
     case 'find_repos': {
       const considered = numericStat(job.stats_json, 'papers_considered')
@@ -3048,15 +3139,7 @@ function App() {
             label="Stats"
             value={
               <p className="long-text">
-                {reusedChildSummary(selectedJob.stats_json) ||
-                  summarizeStats(
-                    selectedJob.stats_json,
-                    jobDisplayStatus(selectedJob) === 'stopping'
-                      ? 'Stop requested…'
-                      : selectedJob.status === 'running'
-                        ? 'Starting…'
-                        : 'no stats yet',
-                  )}
+                {jobStatsDetailSummary(selectedJob)}
               </p>
             }
           />

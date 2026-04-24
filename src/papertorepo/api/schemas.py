@@ -162,6 +162,7 @@ class JobRead(BaseModel):
     scope_json: dict[str, Any]
     dedupe_key: str
     stats_json: dict[str, Any]
+    repair_resume_json: dict[str, Any] | None = None
     error_text: str | None
     stop_requested_at: datetime | None
     stop_reason: str | None
