@@ -3,6 +3,7 @@ name: papertorepo
 services:
   db:
     image: postgres:17-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: papertorepo
       POSTGRES_USER: papertorepo
@@ -17,6 +18,7 @@ services:
 
   app:
     build: .
+    restart: unless-stopped
     env_file:
       - .env
     environment:
@@ -32,6 +34,7 @@ services:
 
   worker:
     build: .
+    restart: unless-stopped
     command: ["sh", "-lc", "uv run papertorepo migrate && uv run papertorepo worker"]
     env_file:
       - .env
