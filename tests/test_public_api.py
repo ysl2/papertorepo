@@ -304,15 +304,25 @@ def test_health_reports_serial_queue_runtime_metadata(db_env, monkeypatch):
     clear_settings_cache()
 
 
-def test_frontend_static_missing_asset_does_not_fallback_to_index(db_env):
-    with TestClient(app) as client:
+def _create_app_with_test_frontend_dist(dist_dir, monkeypatch):
+    dist_dir.mkdir(parents=True)
+    (dist_dir / "index.html").write_text("<!doctype html><div id=\"root\"></div>", encoding="utf-8")
+    monkeypatch.setenv("FRONTEND_DIST_DIR", str(dist_dir))
+    clear_settings_cache()
+    return create_app()
+
+
+def test_frontend_static_missing_asset_does_not_fallback_to_index(db_env, monkeypatch):
+    test_app = _create_app_with_test_frontend_dist(db_env / "frontend-dist", monkeypatch)
+    with TestClient(test_app) as client:
         response = client.get("/assets/missing-build-chunk.js")
 
     assert response.status_code == 404
 
 
-def test_frontend_spa_route_still_falls_back_to_index(db_env):
-    with TestClient(app) as client:
+def test_frontend_spa_route_still_falls_back_to_index(db_env, monkeypatch):
+    test_app = _create_app_with_test_frontend_dist(db_env / "frontend-dist", monkeypatch)
+    with TestClient(test_app) as client:
         response = client.get("/jobs")
 
     assert response.status_code == 200
