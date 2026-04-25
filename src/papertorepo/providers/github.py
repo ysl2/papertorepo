@@ -36,8 +36,8 @@ class GitHubClient:
             else max(effective_min_interval, REFRESH_METADATA_GITHUB_ANONYMOUS_REST_MIN_INTERVAL_SECONDS)
         )
 
-    async def fetch_repo_metadata(self, normalized_github_url: str) -> tuple[GitHubRepoMetadata | None, str | None]:
-        owner_repo = extract_owner_repo(normalized_github_url)
+    async def fetch_repo_metadata(self, github_url: str) -> tuple[GitHubRepoMetadata | None, str | None]:
+        owner_repo = extract_owner_repo(github_url)
         if owner_repo is None:
             return None, "GitHub URL is not a valid GitHub repository"
         owner, repo = owner_repo
@@ -64,12 +64,15 @@ class GitHubClient:
             return None, "GitHub API returned invalid JSON"
         return (
             GitHubRepoMetadata(
-                normalized_github_url=normalize_github_url(normalized_github_url) or normalized_github_url,
-                owner=owner,
-                repo=repo,
-                stars=payload.get("stargazers_count"),
+                github_url=normalize_github_url(github_url) or github_url,
+                name_with_owner=payload.get("full_name") or f"{owner}/{repo}",
+                stargazers_count=payload.get("stargazers_count"),
                 created_at=payload.get("created_at"),
                 description=payload.get("description") if payload.get("description") is not None else "",
+                homepage=payload.get("homepage"),
+                topic=(payload.get("topics") or [None])[0] if isinstance(payload.get("topics"), list) else None,
+                license_spdx_id=((payload.get("license") or {}).get("spdx_id") if isinstance(payload.get("license"), dict) else None),
+                license_name=((payload.get("license") or {}).get("name") if isinstance(payload.get("license"), dict) else None),
             ),
             None,
         )

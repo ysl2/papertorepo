@@ -67,7 +67,7 @@ def _scope_from_query(
     )
 
 
-def _paper_summary_payload(paper: Paper, *, primary_repo_stars: int | None = None) -> dict[str, object]:
+def _paper_summary_payload(paper: Paper, *, primary_github_stargazers_count: int | None = None) -> dict[str, object]:
     state = paper.repo_state
     return {
         "arxiv_id": paper.arxiv_id,
@@ -80,8 +80,8 @@ def _paper_summary_payload(paper: Paper, *, primary_repo_stars: int | None = Non
         "primary_category": paper.primary_category,
         "comment": paper.comment,
         "link_status": state.stable_status if state is not None else RepoStableStatus.unknown,
-        "primary_repo_url": state.primary_repo_url if state is not None else None,
-        "primary_repo_stars": primary_repo_stars,
+        "primary_github_url": state.primary_github_url if state is not None else None,
+        "primary_github_stargazers_count": primary_github_stargazers_count,
         "stable_decided_at": state.stable_decided_at if state is not None else None,
         "refresh_after": state.refresh_after if state is not None else None,
         "last_attempt_at": state.last_attempt_at if state is not None else None,
@@ -90,18 +90,20 @@ def _paper_summary_payload(paper: Paper, *, primary_repo_stars: int | None = Non
     }
 
 
-def serialize_paper_summary(paper: Paper, *, primary_repo_stars: int | None = None) -> PaperSummaryRead:
-    return PaperSummaryRead(**_paper_summary_payload(paper, primary_repo_stars=primary_repo_stars))
+def serialize_paper_summary(paper: Paper, *, primary_github_stargazers_count: int | None = None) -> PaperSummaryRead:
+    return PaperSummaryRead(
+        **_paper_summary_payload(paper, primary_github_stargazers_count=primary_github_stargazers_count)
+    )
 
 
-def serialize_paper(paper: Paper, *, primary_repo_stars: int | None = None) -> PaperRead:
+def serialize_paper(paper: Paper, *, primary_github_stargazers_count: int | None = None) -> PaperRead:
     state = paper.repo_state
     return PaperRead(
-        **_paper_summary_payload(paper, primary_repo_stars=primary_repo_stars),
+        **_paper_summary_payload(paper, primary_github_stargazers_count=primary_github_stargazers_count),
         abstract=paper.abstract,
         doi=paper.doi,
         journal_ref=paper.journal_ref,
-        repo_urls=state.repo_urls_json if state is not None else [],
+        github_urls=state.github_urls_json if state is not None else [],
     )
 
 
@@ -258,23 +260,23 @@ def register_routes(app: FastAPI) -> None:
             offset=offset,
             limit=limit,
         )
-        primary_repo_urls = {
-            paper.repo_state.primary_repo_url
+        primary_github_urls = {
+            paper.repo_state.primary_github_url
             for paper in papers
-            if paper.repo_state is not None and paper.repo_state.primary_repo_url is not None
+            if paper.repo_state is not None and paper.repo_state.primary_github_url is not None
         }
-        stars_by_url = dict(
+        stargazers_by_url = dict(
             db.execute(
-                select(GitHubRepo.normalized_github_url, GitHubRepo.stars).where(
-                    GitHubRepo.normalized_github_url.in_(primary_repo_urls)
+                select(GitHubRepo.github_url, GitHubRepo.stargazers_count).where(
+                    GitHubRepo.github_url.in_(primary_github_urls)
                 )
             ).all()
         )
         rows = [
             serialize_paper_summary(
                 paper,
-                primary_repo_stars=stars_by_url.get(paper.repo_state.primary_repo_url)
-                if paper.repo_state is not None and paper.repo_state.primary_repo_url is not None
+                primary_github_stargazers_count=stargazers_by_url.get(paper.repo_state.primary_github_url)
+                if paper.repo_state is not None and paper.repo_state.primary_github_url is not None
                 else None,
             )
             for paper in papers
@@ -288,9 +290,12 @@ def register_routes(app: FastAPI) -> None:
         paper = db.scalar(select(Paper).options(selectinload(Paper.repo_state)).where(Paper.arxiv_id == arxiv_id))
         if paper is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Paper not found")
-        primary_repo_url = paper.repo_state.primary_repo_url if paper.repo_state is not None else None
-        repo = db.get(GitHubRepo, primary_repo_url) if primary_repo_url is not None else None
-        return serialize_paper(paper, primary_repo_stars=repo.stars if repo is not None else None)
+        primary_github_url = paper.repo_state.primary_github_url if paper.repo_state is not None else None
+        repo = db.get(GitHubRepo, primary_github_url) if primary_github_url is not None else None
+        return serialize_paper(
+            paper,
+            primary_github_stargazers_count=repo.stargazers_count if repo is not None else None,
+        )
 
     @router.get("/repos", response_model=list[RepoRead])
     def public_repos(

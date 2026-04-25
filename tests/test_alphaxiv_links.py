@@ -25,4 +25,4 @@ def test_extract_github_url_from_alphaxiv_html_reads_embedded_resource_repo():
       resources:$R[1123]={github:$R[1124]={url:"https://github.com/YOUNG-bit/open_semantic_slam",description:"ICRA2025 repo"}}
     </script>
     '''
-    assert extract_github_url_from_alphaxiv_html(html) == ("https://github.com/YOUNG-bit/open_semantic_slam",)
+    assert extract_github_url_from_alphaxiv_html(html) == ("https://github.com/young-bit/open_semantic_slam",)

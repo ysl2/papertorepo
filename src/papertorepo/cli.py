@@ -204,7 +204,11 @@ async def async_main_from_args(args: argparse.Namespace) -> int:
 
     if args.command == "repos":
         with session_scope() as db:
-            stmt = select(GitHubRepo).order_by(GitHubRepo.stars.desc().nullslast(), GitHubRepo.checked_at.desc().nullslast()).limit(args.limit)
+            stmt = (
+                select(GitHubRepo)
+                .order_by(GitHubRepo.stargazers_count.desc().nullslast(), GitHubRepo.updated_at.desc().nullslast(), GitHubRepo.github_url)
+                .limit(args.limit)
+            )
             rows = [RepoRead.model_validate(item).model_dump(mode="json") for item in db.scalars(stmt).all()]
         _print_json(rows)
         return 0

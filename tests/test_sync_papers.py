@@ -609,8 +609,8 @@ def test_dashboard_stats_and_scoped_repos_track_refreshed_metadata_scope(db_env)
             PaperRepoState(
                 arxiv_id="2504.00001",
                 stable_status=RepoStableStatus.found,
-                primary_repo_url="https://github.com/foo/in-scope",
-                repo_urls_json=["https://github.com/foo/in-scope"],
+                primary_github_url="https://github.com/foo/in-scope",
+                github_urls_json=["https://github.com/foo/in-scope"],
                 stable_decided_at=utc_now(),
                 refresh_after=utc_now(),
                 last_attempt_at=utc_now(),
@@ -621,8 +621,8 @@ def test_dashboard_stats_and_scoped_repos_track_refreshed_metadata_scope(db_env)
             PaperRepoState(
                 arxiv_id="2504.00002",
                 stable_status=RepoStableStatus.found,
-                primary_repo_url="https://github.com/foo/not-refreshed",
-                repo_urls_json=["https://github.com/foo/not-refreshed"],
+                primary_github_url="https://github.com/foo/not-refreshed",
+                github_urls_json=["https://github.com/foo/not-refreshed"],
                 stable_decided_at=utc_now(),
                 refresh_after=utc_now(),
                 last_attempt_at=utc_now(),
@@ -633,8 +633,8 @@ def test_dashboard_stats_and_scoped_repos_track_refreshed_metadata_scope(db_env)
             PaperRepoState(
                 arxiv_id="2601.00001",
                 stable_status=RepoStableStatus.found,
-                primary_repo_url="https://github.com/foo/out-of-scope",
-                repo_urls_json=["https://github.com/foo/out-of-scope"],
+                primary_github_url="https://github.com/foo/out-of-scope",
+                github_urls_json=["https://github.com/foo/out-of-scope"],
                 stable_decided_at=utc_now(),
                 refresh_after=utc_now(),
                 last_attempt_at=utc_now(),
@@ -645,8 +645,8 @@ def test_dashboard_stats_and_scoped_repos_track_refreshed_metadata_scope(db_env)
             PaperRepoState(
                 arxiv_id="2505.00003",
                 stable_status=RepoStableStatus.found,
-                primary_repo_url="https://github.com/foo/archive-only",
-                repo_urls_json=["https://github.com/foo/archive-only"],
+                primary_github_url="https://github.com/foo/archive-only",
+                github_urls_json=["https://github.com/foo/archive-only"],
                 stable_decided_at=utc_now(),
                 refresh_after=utc_now(),
                 last_attempt_at=utc_now(),
@@ -655,26 +655,20 @@ def test_dashboard_stats_and_scoped_repos_track_refreshed_metadata_scope(db_env)
         )
         db.add(
             GitHubRepo(
-                normalized_github_url="https://github.com/foo/in-scope",
-                owner="foo",
-                repo="in-scope",
-                first_seen_at=utc_now(),
+                github_url="https://github.com/foo/in-scope",
+                name_with_owner="foo/in-scope",
             )
         )
         db.add(
             GitHubRepo(
-                normalized_github_url="https://github.com/foo/out-of-scope",
-                owner="foo",
-                repo="out-of-scope",
-                first_seen_at=utc_now(),
+                github_url="https://github.com/foo/out-of-scope",
+                name_with_owner="foo/out-of-scope",
             )
         )
         db.add(
             GitHubRepo(
-                normalized_github_url="https://github.com/foo/archive-only",
-                owner="foo",
-                repo="archive-only",
-                first_seen_at=utc_now(),
+                github_url="https://github.com/foo/archive-only",
+                name_with_owner="foo/archive-only",
             )
         )
 
@@ -687,7 +681,7 @@ def test_dashboard_stats_and_scoped_repos_track_refreshed_metadata_scope(db_env)
     assert stats["found"] == 2
     assert stats["unknown"] == 0
     assert stats["repos"] == 1
-    assert [repo.normalized_github_url for repo in repos] == ["https://github.com/foo/in-scope"]
+    assert [repo.github_url for repo in repos] == ["https://github.com/foo/in-scope"]
 
 
 def test_dashboard_stats_count_unknown_from_missing_and_unknown_repo_states(db_env):
@@ -702,8 +696,8 @@ def test_dashboard_stats_count_unknown_from_missing_and_unknown_repo_states(db_e
             PaperRepoState(
                 arxiv_id="2504.10001",
                 stable_status=RepoStableStatus.found,
-                primary_repo_url="https://github.com/foo/found",
-                repo_urls_json=["https://github.com/foo/found"],
+                primary_github_url="https://github.com/foo/found",
+                github_urls_json=["https://github.com/foo/found"],
                 stable_decided_at=utc_now(),
                 refresh_after=utc_now(),
                 last_attempt_at=utc_now(),
@@ -714,8 +708,8 @@ def test_dashboard_stats_count_unknown_from_missing_and_unknown_repo_states(db_e
             PaperRepoState(
                 arxiv_id="2504.10002",
                 stable_status=RepoStableStatus.not_found,
-                primary_repo_url=None,
-                repo_urls_json=[],
+                primary_github_url=None,
+                github_urls_json=[],
                 stable_decided_at=utc_now(),
                 refresh_after=utc_now(),
                 last_attempt_at=utc_now(),
@@ -726,8 +720,8 @@ def test_dashboard_stats_count_unknown_from_missing_and_unknown_repo_states(db_e
             PaperRepoState(
                 arxiv_id="2504.10003",
                 stable_status=RepoStableStatus.ambiguous,
-                primary_repo_url="https://github.com/foo/ambiguous-a",
-                repo_urls_json=[
+                primary_github_url="https://github.com/foo/ambiguous-a",
+                github_urls_json=[
                     "https://github.com/foo/ambiguous-a",
                     "https://github.com/foo/ambiguous-b",
                 ],
@@ -741,8 +735,8 @@ def test_dashboard_stats_count_unknown_from_missing_and_unknown_repo_states(db_e
             PaperRepoState(
                 arxiv_id="2504.10004",
                 stable_status=RepoStableStatus.unknown,
-                primary_repo_url=None,
-                repo_urls_json=[],
+                primary_github_url=None,
+                github_urls_json=[],
                 stable_decided_at=None,
                 refresh_after=None,
                 last_attempt_at=utc_now(),

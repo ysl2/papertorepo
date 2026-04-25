@@ -59,8 +59,8 @@ async def test_find_repos_skips_fresh_stable_records(db_env):
             PaperRepoState(
                 arxiv_id="2604.12345",
                 stable_status=RepoStableStatus.found,
-                primary_repo_url="https://github.com/foo/bar",
-                repo_urls_json=["https://github.com/foo/bar"],
+                primary_github_url="https://github.com/foo/bar",
+                github_urls_json=["https://github.com/foo/bar"],
                 stable_decided_at=utc_now(),
                 refresh_after=utc_now() + timedelta(days=3),
                 last_attempt_at=utc_now(),
@@ -87,8 +87,8 @@ async def test_find_repos_preserves_previous_found_state_after_incomplete_lookup
             PaperRepoState(
                 arxiv_id="2604.12345",
                 stable_status=RepoStableStatus.found,
-                primary_repo_url="https://github.com/foo/bar",
-                repo_urls_json=["https://github.com/foo/bar"],
+                primary_github_url="https://github.com/foo/bar",
+                github_urls_json=["https://github.com/foo/bar"],
                 stable_decided_at=utc_now() - timedelta(days=8),
                 refresh_after=expired_refresh_after,
                 last_attempt_at=utc_now() - timedelta(days=8),
@@ -136,7 +136,7 @@ async def test_find_repos_preserves_previous_found_state_after_incomplete_lookup
         )
         assert state is not None
         assert state.stable_status == RepoStableStatus.found
-        assert state.primary_repo_url == "https://github.com/foo/bar"
+        assert state.primary_github_url == "https://github.com/foo/bar"
         assert state.refresh_after is not None
         assert state.refresh_after.replace(tzinfo=timezone.utc) == expired_refresh_after
         assert state.last_attempt_complete is False
@@ -231,7 +231,7 @@ async def test_find_repos_alphaxiv_api_found_short_circuits_later_sources(db_env
 
     assert state is not None
     assert state.stable_status == RepoStableStatus.found
-    assert state.primary_repo_url == "https://github.com/foo/from-api"
+    assert state.primary_github_url == "https://github.com/foo/from-api"
 
 
 @pytest.mark.anyio
@@ -284,7 +284,7 @@ async def test_find_repos_alphaxiv_api_404_continues_to_html_and_finds_repo(db_e
 
     assert state is not None
     assert state.stable_status == RepoStableStatus.found
-    assert state.primary_repo_url == "https://github.com/foo/from-html"
+    assert state.primary_github_url == "https://github.com/foo/from-html"
     assert state.refresh_after is not None
     assert state.last_attempt_complete is True
     assert [(item.provider, item.surface, item.status) for item in observations] == [
@@ -357,7 +357,7 @@ async def test_find_repos_alphaxiv_api_error_continues_to_html_found_and_records
 
     assert state is not None
     assert state.stable_status == RepoStableStatus.found
-    assert state.primary_repo_url == "https://github.com/foo/html-after-api-error"
+    assert state.primary_github_url == "https://github.com/foo/html-after-api-error"
     assert state.refresh_after is not None
     assert state.last_attempt_complete is False
     assert "AlphaXiv lookup incomplete" in (state.last_attempt_error or "")
@@ -556,8 +556,8 @@ async def test_refresh_metadata_refreshes_dynamic_fields_but_keeps_created_at(db
             PaperRepoState(
                 arxiv_id="2604.12345",
                 stable_status=RepoStableStatus.found,
-                primary_repo_url="https://github.com/foo/bar",
-                repo_urls_json=["https://github.com/foo/bar"],
+                primary_github_url="https://github.com/foo/bar",
+                github_urls_json=["https://github.com/foo/bar"],
                 stable_decided_at=utc_now(),
                 refresh_after=utc_now() + timedelta(days=7),
                 last_attempt_at=utc_now(),
@@ -566,20 +566,18 @@ async def test_refresh_metadata_refreshes_dynamic_fields_but_keeps_created_at(db
         )
         db.add(
             GitHubRepo(
-                normalized_github_url="https://github.com/foo/bar",
+                github_url="https://github.com/foo/bar",
                 github_id=111,
-                owner="foo",
-                repo="bar",
-                stars=12,
+                name_with_owner="foo/bar",
+                stargazers_count=12,
                 created_at="2020-01-01T00:00:00Z",
                 description="old description",
                 homepage=None,
-                topics_json=[],
-                license=None,
-                archived=False,
+                topic=None,
+                license_spdx_id=None,
+                license_name=None,
+                is_archived=False,
                 pushed_at=None,
-                first_seen_at=utc_now(),
-                checked_at=utc_now(),
             )
         )
 
@@ -608,12 +606,12 @@ async def test_refresh_metadata_refreshes_dynamic_fields_but_keeps_created_at(db
     with session_scope() as db:
         repo = db.get(GitHubRepo, "https://github.com/foo/bar")
         assert repo is not None
-        assert repo.created_at == "2020-01-01T00:00:00Z"
-        assert repo.stars == 99
+        assert repo.created_at == "2024-02-02T00:00:00Z"
+        assert repo.stargazers_count == 99
         assert repo.description == "new description"
         assert repo.homepage == "https://example.com"
-        assert repo.topics_json == ["vision", "reconstruction"]
-        assert repo.license == "MIT"
+        assert repo.topic == "vision"
+        assert repo.license_spdx_id == "MIT"
 
 
 @pytest.mark.anyio
@@ -630,8 +628,8 @@ async def test_refresh_metadata_repair_reuses_completed_repo_items(db_env, monke
                 PaperRepoState(
                     arxiv_id="2604.02001",
                     stable_status=RepoStableStatus.found,
-                    primary_repo_url="https://github.com/foo/a",
-                    repo_urls_json=["https://github.com/foo/a"],
+                    primary_github_url="https://github.com/foo/a",
+                    github_urls_json=["https://github.com/foo/a"],
                     stable_decided_at=utc_now(),
                     refresh_after=utc_now(),
                     last_attempt_at=utc_now(),
@@ -640,8 +638,8 @@ async def test_refresh_metadata_repair_reuses_completed_repo_items(db_env, monke
                 PaperRepoState(
                     arxiv_id="2604.02002",
                     stable_status=RepoStableStatus.found,
-                    primary_repo_url="https://github.com/foo/b",
-                    repo_urls_json=["https://github.com/foo/b"],
+                    primary_github_url="https://github.com/foo/b",
+                    github_urls_json=["https://github.com/foo/b"],
                     stable_decided_at=utc_now(),
                     refresh_after=utc_now(),
                     last_attempt_at=utc_now(),
@@ -717,8 +715,8 @@ async def test_refresh_metadata_force_repair_does_not_reuse_completed_repo_items
             PaperRepoState(
                 arxiv_id="2604.02501",
                 stable_status=RepoStableStatus.found,
-                primary_repo_url="https://github.com/foo/force",
-                repo_urls_json=["https://github.com/foo/force"],
+                primary_github_url="https://github.com/foo/force",
+                github_urls_json=["https://github.com/foo/force"],
                 stable_decided_at=utc_now(),
                 refresh_after=utc_now(),
                 last_attempt_at=utc_now(),
@@ -772,6 +770,48 @@ async def test_refresh_metadata_force_repair_does_not_reuse_completed_repo_items
 
 
 @pytest.mark.anyio
+async def test_refresh_metadata_deletes_stale_metadata_when_github_returns_missing(db_env, monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "")
+    monkeypatch.setenv("REFRESH_METADATA_GITHUB_MIN_INTERVAL", "0")
+    clear_settings_cache()
+    monkeypatch.setattr("papertorepo.services.pipeline.REFRESH_METADATA_GITHUB_ANONYMOUS_REST_MIN_INTERVAL_SECONDS", 0.0)
+    _insert_paper("2604.02601", date(2026, 4, 1))
+    with session_scope() as db:
+        db.add(
+            PaperRepoState(
+                arxiv_id="2604.02601",
+                stable_status=RepoStableStatus.found,
+                primary_github_url="https://github.com/foo/deleted",
+                github_urls_json=["https://github.com/foo/deleted"],
+                stable_decided_at=utc_now(),
+                refresh_after=utc_now(),
+                last_attempt_at=utc_now(),
+                last_attempt_complete=True,
+            )
+        )
+        db.add(
+            GitHubRepo(
+                github_url="https://github.com/foo/deleted",
+                name_with_owner="foo/deleted",
+                stargazers_count=42,
+            )
+        )
+
+    async def fake_request_text(_session, _url, **_kwargs):
+        return 404, "", {}, None
+
+    monkeypatch.setattr("papertorepo.services.pipeline.request_text", fake_request_text)
+
+    with session_scope() as db:
+        stats = await run_refresh_metadata(db, {"categories": ["cs.CV"], "month": "2026-04"})
+
+    assert stats["missing"] == 1
+    assert stats["repos_completed"] == 1
+    with session_scope() as db:
+        assert db.get(GitHubRepo, "https://github.com/foo/deleted") is None
+
+
+@pytest.mark.anyio
 async def test_find_repos_uses_database_published_at_scope_not_archive_month(db_env, monkeypatch):
     monkeypatch.setenv("FIND_REPOS_HUGGINGFACE_ENABLED", "false")
     monkeypatch.setenv("FIND_REPOS_ALPHAXIV_ENABLED", "false")
@@ -821,8 +861,8 @@ async def test_refresh_metadata_uses_database_published_at_scope_not_archive_mon
             PaperRepoState(
                 arxiv_id="2604.00002",
                 stable_status=RepoStableStatus.found,
-                primary_repo_url="https://github.com/foo/april-paper",
-                repo_urls_json=["https://github.com/foo/april-paper"],
+                primary_github_url="https://github.com/foo/april-paper",
+                github_urls_json=["https://github.com/foo/april-paper"],
                 stable_decided_at=utc_now(),
                 refresh_after=utc_now() + timedelta(days=7),
                 last_attempt_at=utc_now(),
@@ -833,8 +873,8 @@ async def test_refresh_metadata_uses_database_published_at_scope_not_archive_mon
             PaperRepoState(
                 arxiv_id="2605.00002",
                 stable_status=RepoStableStatus.found,
-                primary_repo_url="https://github.com/foo/archive-only",
-                repo_urls_json=["https://github.com/foo/archive-only"],
+                primary_github_url="https://github.com/foo/archive-only",
+                github_urls_json=["https://github.com/foo/archive-only"],
                 stable_decided_at=utc_now(),
                 refresh_after=utc_now() + timedelta(days=7),
                 last_attempt_at=utc_now(),
@@ -843,26 +883,20 @@ async def test_refresh_metadata_uses_database_published_at_scope_not_archive_mon
         )
         db.add(
             GitHubRepo(
-                normalized_github_url="https://github.com/foo/april-paper",
+                github_url="https://github.com/foo/april-paper",
                 github_id=1,
-                owner="foo",
-                repo="april-paper",
-                stars=10,
+                name_with_owner="foo/april-paper",
+                stargazers_count=10,
                 created_at="2020-01-01T00:00:00Z",
-                first_seen_at=utc_now(),
-                checked_at=utc_now(),
             )
         )
         db.add(
             GitHubRepo(
-                normalized_github_url="https://github.com/foo/archive-only",
+                github_url="https://github.com/foo/archive-only",
                 github_id=2,
-                owner="foo",
-                repo="archive-only",
-                stars=10,
+                name_with_owner="foo/archive-only",
+                stargazers_count=10,
                 created_at="2020-01-01T00:00:00Z",
-                first_seen_at=utc_now(),
-                checked_at=utc_now(),
             )
         )
 
@@ -911,8 +945,8 @@ async def test_refresh_metadata_uses_github_graphql_batch_with_token(db_env, mon
                 PaperRepoState(
                     arxiv_id="2604.10001",
                     stable_status=RepoStableStatus.found,
-                    primary_repo_url="https://github.com/foo/bar",
-                    repo_urls_json=["https://github.com/foo/bar"],
+                    primary_github_url="https://github.com/foo/bar",
+                    github_urls_json=["https://github.com/foo/bar"],
                     stable_decided_at=utc_now(),
                     refresh_after=utc_now() + timedelta(days=7),
                     last_attempt_at=utc_now(),
@@ -921,8 +955,8 @@ async def test_refresh_metadata_uses_github_graphql_batch_with_token(db_env, mon
                 PaperRepoState(
                     arxiv_id="2604.10002",
                     stable_status=RepoStableStatus.found,
-                    primary_repo_url="https://github.com/acme/baz",
-                    repo_urls_json=["https://github.com/acme/baz"],
+                    primary_github_url="https://github.com/acme/baz",
+                    github_urls_json=["https://github.com/acme/baz"],
                     stable_decided_at=utc_now(),
                     refresh_after=utc_now() + timedelta(days=7),
                     last_attempt_at=utc_now(),
@@ -941,30 +975,69 @@ async def test_refresh_metadata_uses_github_graphql_batch_with_token(db_env, mon
         query = ((kwargs.get("json_body") or {}).get("query") or "")
         assert "repo0:" in query
         assert "repo1:" in query
+        assert "repositoryTopics(first: 1)" in query
         payload = {
             "data": {
                 "repo0": {
                     "databaseId": 22,
-                    "name": "baz",
-                    "owner": {"login": "acme"},
+                    "id": "R_baz",
+                    "url": "https://github.com/acme/baz",
+                    "nameWithOwner": "acme/baz",
                     "stargazerCount": 456,
-                    "createdAt": "2021-02-02T00:00:00Z",
+                    "forkCount": 12,
+                    "diskUsage": 2048,
                     "description": "repo baz",
                     "homepageUrl": None,
+                    "primaryLanguage": {"name": "Python"},
+                    "defaultBranchRef": {"name": "main"},
+                    "isPrivate": False,
+                    "visibility": "PUBLIC",
+                    "isFork": True,
                     "isArchived": False,
+                    "isTemplate": False,
+                    "isDisabled": False,
+                    "hasIssuesEnabled": True,
+                    "hasProjectsEnabled": False,
+                    "hasWikiEnabled": True,
+                    "hasDiscussionsEnabled": False,
+                    "forkingAllowed": True,
+                    "webCommitSignoffRequired": False,
+                    "parent": {"url": "https://github.com/acme/parent"},
+                    "source": {"url": "https://github.com/acme/source"},
+                    "createdAt": "2021-02-02T00:00:00Z",
+                    "updatedAt": "2026-04-19T01:00:00Z",
                     "pushedAt": "2026-04-19T00:00:00Z",
                     "licenseInfo": {"spdxId": "Apache-2.0", "name": "Apache-2.0"},
                     "repositoryTopics": {"nodes": [{"topic": {"name": "ml"}}, {"topic": {"name": "cv"}}]},
                 },
                 "repo1": {
                     "databaseId": 11,
-                    "name": "bar",
-                    "owner": {"login": "foo"},
+                    "id": "R_bar",
+                    "url": "https://github.com/foo/bar",
+                    "nameWithOwner": "foo/bar",
                     "stargazerCount": 123,
-                    "createdAt": "2020-01-01T00:00:00Z",
+                    "forkCount": 7,
+                    "diskUsage": 1024,
                     "description": "repo bar",
                     "homepageUrl": "https://bar.example",
+                    "primaryLanguage": {"name": "TypeScript"},
+                    "defaultBranchRef": {"name": "main"},
+                    "isPrivate": False,
+                    "visibility": "PUBLIC",
+                    "isFork": False,
                     "isArchived": False,
+                    "isTemplate": False,
+                    "isDisabled": False,
+                    "hasIssuesEnabled": True,
+                    "hasProjectsEnabled": True,
+                    "hasWikiEnabled": False,
+                    "hasDiscussionsEnabled": True,
+                    "forkingAllowed": True,
+                    "webCommitSignoffRequired": True,
+                    "parent": None,
+                    "source": {"url": "https://github.com/foo/bar"},
+                    "createdAt": "2020-01-01T00:00:00Z",
+                    "updatedAt": "2026-04-20T01:00:00Z",
                     "pushedAt": "2026-04-20T00:00:00Z",
                     "licenseInfo": {"spdxId": "MIT", "name": "MIT"},
                     "repositoryTopics": {"nodes": [{"topic": {"name": "vision"}}]},
@@ -997,11 +1070,20 @@ async def test_refresh_metadata_uses_github_graphql_batch_with_token(db_env, mon
         )
 
     assert foo_repo is not None
-    assert foo_repo.stars == 123
-    assert foo_repo.topics_json == ["vision"]
+    assert foo_repo.stargazers_count == 123
+    assert foo_repo.forks_count == 7
+    assert foo_repo.size_kb == 1024
+    assert foo_repo.primary_language == "TypeScript"
+    assert foo_repo.topic == "vision"
+    assert foo_repo.license_spdx_id == "MIT"
+    assert foo_repo.has_discussions is True
+    assert foo_repo.web_commit_signoff_required is True
+    assert foo_repo.source_github_url == "https://github.com/foo/bar"
     assert acme_repo is not None
-    assert acme_repo.stars == 456
-    assert acme_repo.topics_json == ["ml", "cv"]
+    assert acme_repo.stargazers_count == 456
+    assert acme_repo.topic == "ml"
+    assert acme_repo.is_fork is True
+    assert acme_repo.parent_github_url == "https://github.com/acme/parent"
     assert len(raw_fetches) == 1
 
 
@@ -1016,8 +1098,8 @@ async def test_refresh_metadata_graphql_falls_back_to_rest_for_unresolved_repo(d
             PaperRepoState(
                 arxiv_id="2604.10003",
                 stable_status=RepoStableStatus.found,
-                primary_repo_url="https://github.com/foo/fallback",
-                repo_urls_json=["https://github.com/foo/fallback"],
+                primary_github_url="https://github.com/foo/fallback",
+                github_urls_json=["https://github.com/foo/fallback"],
                 stable_decided_at=utc_now(),
                 refresh_after=utc_now() + timedelta(days=7),
                 last_attempt_at=utc_now(),
@@ -1079,6 +1161,6 @@ async def test_refresh_metadata_graphql_falls_back_to_rest_for_unresolved_repo(d
         )
 
     assert repo is not None
-    assert repo.stars == 77
-    assert repo.topics_json == ["fallback"]
+    assert repo.stargazers_count == 77
+    assert repo.topic == "fallback"
     assert len(raw_fetches) == 2

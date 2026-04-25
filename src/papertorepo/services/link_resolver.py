@@ -13,10 +13,10 @@ FINAL_NOT_FOUND = "not_found"
 def build_final_links(arxiv_id: str, observations: list[RepoObservation]) -> list[dict]:
     grouped: dict[str, dict[str, set[str]]] = defaultdict(lambda: {"providers": set(), "surfaces": set()})
     for observation in observations:
-        if observation.status != "found" or not observation.normalized_repo_url:
+        if observation.status != "found" or not observation.github_url:
             continue
-        grouped[observation.normalized_repo_url]["providers"].add(observation.provider)
-        grouped[observation.normalized_repo_url]["surfaces"].add(f"{observation.provider}:{observation.surface}")
+        grouped[observation.github_url]["providers"].add(observation.provider)
+        grouped[observation.github_url]["surfaces"].add(f"{observation.provider}:{observation.surface}")
 
     if not grouped:
         return []
@@ -36,7 +36,7 @@ def build_final_links(arxiv_id: str, observations: list[RepoObservation]) -> lis
         surfaces = grouped[url]["surfaces"]
         links.append(
             {
-                "normalized_repo_url": url,
+                "github_url": url,
                 "status": FINAL_AMBIGUOUS if ambiguous else FINAL_FOUND,
                 "providers": providers,
                 "surfaces": surfaces,

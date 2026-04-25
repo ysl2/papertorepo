@@ -17,10 +17,10 @@ CSV_COLUMNS = [
     "published_at",
     "categories",
     "primary_category",
-    "github_primary",
-    "github_all",
+    "primary_github_url",
+    "github_urls",
     "link_status",
-    "stars",
+    "stargazers_count",
     "created_at",
     "description",
 ]
@@ -61,9 +61,9 @@ def build_export_row(
     repo_metadata_by_url: dict[str, GitHubRepoMetadata],
 ) -> dict[str, object]:
     primary_link = next((link for link in links if link.is_primary), None)
-    primary_url = primary_link.normalized_repo_url if primary_link else ""
+    primary_url = primary_link.github_url if primary_link else ""
     metadata = repo_metadata_by_url.get(primary_url) if primary_url else None
-    all_links = "; ".join(link.normalized_repo_url for link in links)
+    all_links = "; ".join(link.github_url for link in links)
     link_status = primary_link.status if primary_link else "not_found"
     return {
         "arxiv_id": paper.arxiv_id,
@@ -73,10 +73,10 @@ def build_export_row(
         "published_at": paper.published_at or "",
         "categories": ", ".join(paper.categories),
         "primary_category": paper.primary_category or "",
-        "github_primary": primary_url,
-        "github_all": all_links,
+        "primary_github_url": primary_url,
+        "github_urls": all_links,
         "link_status": link_status,
-        "stars": metadata.stars if metadata else "",
+        "stargazers_count": metadata.stargazers_count if metadata else "",
         "created_at": metadata.created_at if metadata else "",
         "description": metadata.description if metadata else "",
     }

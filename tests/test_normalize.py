@@ -12,6 +12,7 @@ def test_reject_non_arxiv_single_url():
 
 def test_normalize_github_repo_url():
     assert normalize_github_url("https://github.com/foo/bar.git") == "https://github.com/foo/bar"
+    assert normalize_github_url("https://github.com/Foo/Bar-Baz.git") == "https://github.com/foo/bar-baz"
 
 
 def test_extract_github_repo_urls_from_text():

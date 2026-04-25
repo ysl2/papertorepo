@@ -50,8 +50,8 @@ def test_public_papers_returns_summary_rows(db_env):
             PaperRepoState(
                 arxiv_id="2604.15312",
                 stable_status=RepoStableStatus.found,
-                primary_repo_url="https://github.com/example/project",
-                repo_urls_json=["https://github.com/example/project"],
+                primary_github_url="https://github.com/example/project",
+                github_urls_json=["https://github.com/example/project"],
                 stable_decided_at=utc_now(),
                 refresh_after=utc_now(),
                 last_attempt_at=utc_now(),
@@ -61,20 +61,18 @@ def test_public_papers_returns_summary_rows(db_env):
         )
         db.add(
             GitHubRepo(
-                normalized_github_url="https://github.com/example/project",
+                github_url="https://github.com/example/project",
                 github_id=123,
-                owner="example",
-                repo="project",
-                stars=321,
+                name_with_owner="example/project",
+                stargazers_count=321,
                 created_at="2020-01-01T00:00:00Z",
                 description="example project",
                 homepage=None,
-                topics_json=[],
-                license=None,
-                archived=False,
+                topic=None,
+                license_spdx_id=None,
+                license_name=None,
+                is_archived=False,
                 pushed_at="2026-04-18T00:00:00Z",
-                first_seen_at=utc_now(),
-                checked_at=utc_now(),
             )
         )
 
@@ -87,15 +85,15 @@ def test_public_papers_returns_summary_rows(db_env):
     row = rows[0]
     assert row["arxiv_id"] == "2604.15312"
     assert row["title"] == "Bidirectional Cross-Modal Prompting"
-    assert row["primary_repo_url"] == "https://github.com/example/project"
-    assert row["primary_repo_stars"] == 321
+    assert row["primary_github_url"] == "https://github.com/example/project"
+    assert row["primary_github_stargazers_count"] == 321
     assert row["link_status"] == "found"
     assert "abstract" not in row
     assert row["comment"] == "CVPR 2026"
-    assert "repo_urls" not in row
+    assert "github_urls" not in row
 
 
-def test_public_papers_returns_null_primary_repo_stars_without_metadata(db_env):
+def test_public_papers_returns_null_primary_github_stargazers_count_without_metadata(db_env):
     with session_scope() as db:
         db.add(
             Paper(
@@ -117,8 +115,8 @@ def test_public_papers_returns_null_primary_repo_stars_without_metadata(db_env):
             PaperRepoState(
                 arxiv_id="2604.15313",
                 stable_status=RepoStableStatus.found,
-                primary_repo_url="https://github.com/missing/project",
-                repo_urls_json=["https://github.com/missing/project"],
+                primary_github_url="https://github.com/missing/project",
+                github_urls_json=["https://github.com/missing/project"],
                 stable_decided_at=utc_now(),
                 refresh_after=utc_now(),
                 last_attempt_at=utc_now(),
@@ -132,8 +130,8 @@ def test_public_papers_returns_null_primary_repo_stars_without_metadata(db_env):
 
     assert response.status_code == 200
     row = response.json()[0]
-    assert row["primary_repo_url"] == "https://github.com/missing/project"
-    assert row["primary_repo_stars"] is None
+    assert row["primary_github_url"] == "https://github.com/missing/project"
+    assert row["primary_github_stargazers_count"] is None
 
 
 def test_public_papers_supports_offset_paging(db_env):
@@ -197,8 +195,8 @@ def test_public_paper_detail_returns_full_payload(db_env):
             PaperRepoState(
                 arxiv_id="2604.15311",
                 stable_status=RepoStableStatus.not_found,
-                primary_repo_url=None,
-                repo_urls_json=[],
+                primary_github_url=None,
+                github_urls_json=[],
                 stable_decided_at=utc_now(),
                 refresh_after=utc_now(),
                 last_attempt_at=utc_now(),
@@ -217,7 +215,7 @@ def test_public_paper_detail_returns_full_payload(db_env):
     assert payload["abstract"] == "Detail abstract"
     assert payload["comment"] == "Accepted by CVPR 2026"
     assert payload["doi"] == "10.48550/arXiv.2604.15311"
-    assert payload["repo_urls"] == []
+    assert payload["github_urls"] == []
 
     assert not_found_response.status_code == 404
     assert not_found_response.json()["detail"] == "Paper not found"
@@ -252,6 +250,23 @@ def test_health_reports_serial_queue_runtime_metadata(db_env, monkeypatch):
     assert payload["step_providers"]["refresh_metadata"] == ["github_api"]
 
     clear_settings_cache()
+
+
+def test_frontend_static_missing_asset_does_not_fallback_to_index(db_env):
+    with TestClient(app) as client:
+        response = client.get("/assets/missing-build-chunk.js")
+
+    assert response.status_code == 404
+
+
+def test_frontend_spa_route_still_falls_back_to_index(db_env):
+    with TestClient(app) as client:
+        response = client.get("/jobs")
+
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert response.headers["cache-control"] == "no-cache"
+    assert '<div id="root"></div>' in response.text
 
 
 def test_public_dashboard_returns_job_queue_summary(db_env):

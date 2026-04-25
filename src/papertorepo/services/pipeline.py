@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session, selectinload
 from papertorepo.core.records import Paper as ParsedPaper
 from papertorepo.core.http import RateLimiter, build_timeout, request_text
 from papertorepo.core.normalize.arxiv import extract_arxiv_id
-from papertorepo.core.normalize.github import extract_github_repo_urls, extract_owner_repo
+from papertorepo.core.normalize.github import extract_github_repo_urls, extract_owner_repo, normalize_github_url
 from papertorepo.providers.alphaxiv_links import (
     AlphaXivLinksClient,
     extract_github_url_from_alphaxiv_html,
@@ -72,7 +72,7 @@ SYNC_PAPERS_ARXIV_CATCHUP_MAX_AGE_DAYS = 90
 SYNC_PAPERS_ARXIV_MAX_CONCURRENT = 1
 SYNC_PAPERS_ARXIV_LIST_ABS_LINK_PATTERN = re.compile(r'href\s*=\s*"/abs/([^"#?]+)"', re.IGNORECASE)
 REFRESH_METADATA_GITHUB_GRAPHQL_MAX_CONCURRENT = 1
-REFRESH_METADATA_GITHUB_GRAPHQL_TOPICS_FIRST = 20
+REFRESH_METADATA_GITHUB_GRAPHQL_TOPICS_FIRST = 1
 RESUME_ITEM_STATUS_COMPLETED = "completed"
 RESUME_ITEM_KIND_PAPER = "paper"
 RESUME_ITEM_KIND_REPO = "repo"
@@ -462,13 +462,13 @@ def scoped_papers(
 
 def scoped_repos(db: Session, scope_json: dict[str, Any], *, limit: int | None = None) -> list[GitHubRepo]:
     repo_urls = (
-        select(PaperRepoState.primary_repo_url)
+        select(PaperRepoState.primary_github_url)
         .join(Paper, Paper.arxiv_id == PaperRepoState.arxiv_id)
-        .where(PaperRepoState.primary_repo_url.is_not(None), *_paper_scope_conditions(scope_json))
+        .where(PaperRepoState.primary_github_url.is_not(None), *_paper_scope_conditions(scope_json))
         .distinct()
     )
-    stmt = select(GitHubRepo).where(GitHubRepo.normalized_github_url.in_(repo_urls))
-    stmt = stmt.order_by(GitHubRepo.stars.desc().nullslast(), GitHubRepo.checked_at.desc().nullslast())
+    stmt = select(GitHubRepo).where(GitHubRepo.github_url.in_(repo_urls))
+    stmt = stmt.order_by(GitHubRepo.stargazers_count.desc().nullslast(), GitHubRepo.updated_at.desc().nullslast(), GitHubRepo.github_url)
     if limit is not None:
         stmt = stmt.limit(limit)
     return list(db.scalars(stmt))
@@ -512,13 +512,13 @@ def get_dashboard_stats(db: Session, scope_json: dict[str, Any]) -> dict[str, An
     counts["unknown"] = paper_count - known_status_total
 
     repo_urls = (
-        select(PaperRepoState.primary_repo_url)
+        select(PaperRepoState.primary_github_url)
         .join(Paper, Paper.arxiv_id == PaperRepoState.arxiv_id)
-        .where(PaperRepoState.primary_repo_url.is_not(None), *_paper_scope_conditions(scope_json))
+        .where(PaperRepoState.primary_github_url.is_not(None), *_paper_scope_conditions(scope_json))
         .distinct()
     )
     counts["repos"] = db.scalar(
-        select(func.count()).select_from(GitHubRepo).where(GitHubRepo.normalized_github_url.in_(repo_urls))
+        select(func.count()).select_from(GitHubRepo).where(GitHubRepo.github_url.in_(repo_urls))
     ) or 0
     counts["exports"] = db.scalar(select(func.count()).select_from(ExportRecord)) or 0
     counts["pending_jobs"] = db.scalar(select(func.count()).select_from(Job).where(Job.status == JobStatus.pending)) or 0
@@ -824,8 +824,8 @@ def _upsert_observations(db: Session, arxiv_id: str, observations: list[dict[str
                 provider=item["provider"],
                 surface=item["surface"],
                 status=item["status"],
-                observed_repo_url=item.get("observed_repo_url"),
-                normalized_repo_url=item.get("normalized_repo_url"),
+                observed_github_url=item.get("observed_github_url"),
+                github_url=item.get("github_url"),
                 evidence_excerpt=item.get("evidence_excerpt"),
                 raw_fetch_id=item.get("raw_fetch_id"),
                 error_message=item.get("error_message"),
@@ -837,9 +837,9 @@ def _upsert_observations(db: Session, arxiv_id: str, observations: list[dict[str
 def _finalize_repo_urls(observations: list[dict[str, Any]]) -> list[str]:
     grouped: dict[str, tuple[set[str], set[str]]] = {}
     for item in observations:
-        if item["status"] != ObservationStatus.found or not item.get("normalized_repo_url"):
+        if item["status"] != ObservationStatus.found or not item.get("github_url"):
             continue
-        url = item["normalized_repo_url"]
+        url = item["github_url"]
         providers, surfaces = grouped.setdefault(url, (set(), set()))
         providers.add(item["provider"])
         surfaces.add(f'{item["provider"]}:{item["surface"]}')
@@ -866,33 +866,33 @@ def _apply_repo_state(
     link_ttl = timedelta(days=max(1, get_settings().find_repos_link_ttl_days))
 
     previous_status = state.stable_status
-    previous_primary = state.primary_repo_url
-    previous_urls = list(state.repo_urls_json or [])
+    previous_primary = state.primary_github_url
+    previous_urls = list(state.github_urls_json or [])
     previous_decided_at = state.stable_decided_at
     previous_refresh_after = state.refresh_after
 
     if final_urls:
         state.stable_status = RepoStableStatus.ambiguous if len(final_urls) > 1 else RepoStableStatus.found
-        state.primary_repo_url = final_urls[0]
-        state.repo_urls_json = final_urls
+        state.primary_github_url = final_urls[0]
+        state.github_urls_json = final_urls
         state.stable_decided_at = now
         state.refresh_after = now + link_ttl
     elif complete:
         state.stable_status = RepoStableStatus.not_found
-        state.primary_repo_url = None
-        state.repo_urls_json = []
+        state.primary_github_url = None
+        state.github_urls_json = []
         state.stable_decided_at = now
         state.refresh_after = now + link_ttl
     elif previous_status in {RepoStableStatus.found, RepoStableStatus.not_found, RepoStableStatus.ambiguous}:
         state.stable_status = previous_status
-        state.primary_repo_url = previous_primary
-        state.repo_urls_json = previous_urls
+        state.primary_github_url = previous_primary
+        state.github_urls_json = previous_urls
         state.stable_decided_at = previous_decided_at
         state.refresh_after = previous_refresh_after
     else:
         state.stable_status = RepoStableStatus.unknown
-        state.primary_repo_url = None
-        state.repo_urls_json = []
+        state.primary_github_url = None
+        state.github_urls_json = []
         state.stable_decided_at = None
         state.refresh_after = None
 
@@ -1520,8 +1520,8 @@ async def _probe_huggingface(
                     "provider": "huggingface",
                     "surface": "paper_api",
                     "status": ObservationStatus.found,
-                    "observed_repo_url": url,
-                    "normalized_repo_url": url,
+                    "observed_github_url": url,
+                    "github_url": url,
                     "raw_fetch_ref": "huggingface_api",
                 }
             )
@@ -1582,8 +1582,8 @@ async def _probe_alphaxiv_api(
                     "provider": "alphaxiv",
                     "surface": "paper_api",
                     "status": ObservationStatus.found,
-                    "observed_repo_url": url,
-                    "normalized_repo_url": url,
+                    "observed_github_url": url,
+                    "github_url": url,
                     "raw_fetch_ref": "alphaxiv_api",
                 }
             )
@@ -1644,8 +1644,8 @@ async def _probe_alphaxiv_html(
                     "provider": "alphaxiv",
                     "surface": "paper_html",
                     "status": ObservationStatus.found,
-                    "observed_repo_url": url,
-                    "normalized_repo_url": url,
+                    "observed_github_url": url,
+                    "github_url": url,
                     "raw_fetch_ref": "alphaxiv_html",
                 }
             )
@@ -1729,8 +1729,8 @@ async def _lookup_links_for_paper(
                     "provider": "arxiv",
                     "surface": "comment",
                     "status": ObservationStatus.found,
-                    "observed_repo_url": url,
-                    "normalized_repo_url": url,
+                    "observed_github_url": url,
+                    "github_url": url,
                     "evidence_excerpt": task.comment,
                 }
             )
@@ -1755,8 +1755,8 @@ async def _lookup_links_for_paper(
                         "provider": "arxiv",
                         "surface": "abstract",
                         "status": ObservationStatus.found,
-                        "observed_repo_url": url,
-                        "normalized_repo_url": url,
+                        "observed_github_url": url,
+                        "github_url": url,
                         "evidence_excerpt": task.abstract,
                     }
                 )
@@ -1969,22 +1969,13 @@ async def run_find_repos(
     return stats
 
 
-def _github_api_headers(
-    *,
-    github_token: str,
-    existing: GitHubRepo | None = None,
-) -> dict[str, str]:
+def _github_api_headers(*, github_token: str) -> dict[str, str]:
     headers = {
         "Accept": "application/vnd.github+json",
         "User-Agent": "papertorepo",
     }
     if github_token:
         headers["Authorization"] = f"Bearer {github_token}"
-    if existing is not None:
-        if existing.etag:
-            headers["If-None-Match"] = existing.etag
-        if existing.last_modified:
-            headers["If-Modified-Since"] = existing.last_modified
     return headers
 
 
@@ -2010,15 +2001,34 @@ def _build_github_graphql_query(batch: list[tuple[str, str, str]]) -> str:
             (
                 f"repo{index}: repository(owner: {json.dumps(owner)}, name: {json.dumps(repo)}) {{"
                 " databaseId"
-                " name"
-                " owner { login }"
+                " id"
+                " url"
+                " nameWithOwner"
                 " stargazerCount"
-                " createdAt"
+                " forkCount"
+                " diskUsage"
                 " description"
                 " homepageUrl"
-                " isArchived"
-                " pushedAt"
+                " primaryLanguage { name }"
                 " licenseInfo { spdxId name }"
+                " defaultBranchRef { name }"
+                " isPrivate"
+                " visibility"
+                " isFork"
+                " isArchived"
+                " isTemplate"
+                " isDisabled"
+                " hasIssuesEnabled"
+                " hasProjectsEnabled"
+                " hasWikiEnabled"
+                " hasDiscussionsEnabled"
+                " forkingAllowed"
+                " webCommitSignoffRequired"
+                " parent { url }"
+                " source { url }"
+                " createdAt"
+                " updatedAt"
+                " pushedAt"
                 f" repositoryTopics(first: {REFRESH_METADATA_GITHUB_GRAPHQL_TOPICS_FIRST}) {{ nodes {{ topic {{ name }} }} }}"
                 " }"
             )
@@ -2026,8 +2036,8 @@ def _build_github_graphql_query(batch: list[tuple[str, str, str]]) -> str:
     return "query RepoBatch {\n" + "\n".join(selections) + "\n}"
 
 
-def _normalize_github_graphql_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    topics: list[str] = []
+def _normalize_github_graphql_payload(payload: dict[str, Any], *, fallback_url: str) -> dict[str, Any]:
+    topic_name: str | None = None
     repository_topics = payload.get("repositoryTopics")
     if isinstance(repository_topics, dict):
         for item in repository_topics.get("nodes") or []:
@@ -2038,39 +2048,85 @@ def _normalize_github_graphql_payload(payload: dict[str, Any]) -> dict[str, Any]
                 continue
             name = str(topic.get("name") or "").strip()
             if name:
-                topics.append(name)
-    license_info = payload.get("licenseInfo") if isinstance(payload.get("licenseInfo"), dict) else None
-    owner_info = payload.get("owner") if isinstance(payload.get("owner"), dict) else None
+                topic_name = name
+                break
+    license_info = payload.get("licenseInfo") if isinstance(payload.get("licenseInfo"), dict) else {}
+    primary_language = payload.get("primaryLanguage") if isinstance(payload.get("primaryLanguage"), dict) else {}
+    default_branch = payload.get("defaultBranchRef") if isinstance(payload.get("defaultBranchRef"), dict) else {}
+    parent = payload.get("parent") if isinstance(payload.get("parent"), dict) else {}
+    source = payload.get("source") if isinstance(payload.get("source"), dict) else {}
     return {
+        "github_url": normalize_github_url(str(payload.get("url") or "")) or fallback_url,
         "github_id": payload.get("databaseId"),
-        "owner": (owner_info or {}).get("login") or "",
-        "repo": payload.get("name") or "",
-        "stars": payload.get("stargazerCount"),
-        "created_at": payload.get("createdAt"),
-        "description": payload.get("description") or "",
+        "node_id": payload.get("id"),
+        "name_with_owner": payload.get("nameWithOwner"),
+        "description": payload.get("description"),
         "homepage": payload.get("homepageUrl"),
-        "topics": topics,
-        "license": (license_info or {}).get("spdx_id")
-        or (license_info or {}).get("spdxId")
-        or (license_info or {}).get("name"),
-        "archived": bool(payload.get("isArchived")),
+        "stargazers_count": payload.get("stargazerCount"),
+        "forks_count": payload.get("forkCount"),
+        "size_kb": payload.get("diskUsage"),
+        "primary_language": primary_language.get("name"),
+        "topic": topic_name,
+        "license_spdx_id": license_info.get("spdxId") or license_info.get("spdx_id"),
+        "license_name": license_info.get("name"),
+        "default_branch": default_branch.get("name"),
+        "is_private": payload.get("isPrivate"),
+        "visibility": payload.get("visibility"),
+        "is_fork": payload.get("isFork"),
+        "is_archived": payload.get("isArchived"),
+        "is_template": payload.get("isTemplate"),
+        "is_disabled": payload.get("isDisabled"),
+        "has_issues": payload.get("hasIssuesEnabled"),
+        "has_projects": payload.get("hasProjectsEnabled"),
+        "has_wiki": payload.get("hasWikiEnabled"),
+        "has_discussions": payload.get("hasDiscussionsEnabled"),
+        "allow_forking": payload.get("forkingAllowed"),
+        "web_commit_signoff_required": payload.get("webCommitSignoffRequired"),
+        "parent_github_url": normalize_github_url(str(parent.get("url") or "")),
+        "source_github_url": normalize_github_url(str(source.get("url") or "")),
+        "created_at": payload.get("createdAt"),
+        "updated_at": payload.get("updatedAt"),
         "pushed_at": payload.get("pushedAt"),
     }
 
 
-def _normalize_github_rest_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    owner_info = payload.get("owner") if isinstance(payload.get("owner"), dict) else None
+def _normalize_github_rest_payload(payload: dict[str, Any], *, fallback_url: str) -> dict[str, Any]:
+    license_info = payload.get("license") if isinstance(payload.get("license"), dict) else {}
+    parent = payload.get("parent") if isinstance(payload.get("parent"), dict) else {}
+    source = payload.get("source") if isinstance(payload.get("source"), dict) else {}
+    topics = payload.get("topics") if isinstance(payload.get("topics"), list) else []
+    topic = next((item.strip() for item in topics if isinstance(item, str) and item.strip()), None)
     return {
+        "github_url": normalize_github_url(str(payload.get("html_url") or "")) or fallback_url,
         "github_id": payload.get("id"),
-        "owner": (owner_info or {}).get("login") or "",
-        "repo": payload.get("name") or "",
-        "stars": payload.get("stargazers_count"),
-        "created_at": payload.get("created_at"),
-        "description": payload.get("description") or "",
+        "node_id": payload.get("node_id"),
+        "name_with_owner": payload.get("full_name"),
+        "description": payload.get("description"),
         "homepage": payload.get("homepage"),
-        "topics": payload.get("topics") or [],
-        "license": _license_from_payload(payload),
-        "archived": bool(payload.get("archived")),
+        "stargazers_count": payload.get("stargazers_count"),
+        "forks_count": payload.get("forks_count"),
+        "size_kb": payload.get("size"),
+        "primary_language": payload.get("language"),
+        "topic": topic,
+        "license_spdx_id": license_info.get("spdx_id"),
+        "license_name": license_info.get("name"),
+        "default_branch": payload.get("default_branch"),
+        "is_private": payload.get("private"),
+        "visibility": payload.get("visibility"),
+        "is_fork": payload.get("fork"),
+        "is_archived": payload.get("archived"),
+        "is_template": payload.get("is_template"),
+        "is_disabled": payload.get("disabled"),
+        "has_issues": payload.get("has_issues"),
+        "has_projects": payload.get("has_projects"),
+        "has_wiki": payload.get("has_wiki"),
+        "has_discussions": payload.get("has_discussions"),
+        "allow_forking": payload.get("allow_forking"),
+        "web_commit_signoff_required": payload.get("web_commit_signoff_required"),
+        "parent_github_url": normalize_github_url(str(parent.get("html_url") or "")),
+        "source_github_url": normalize_github_url(str(source.get("html_url") or "")),
+        "created_at": payload.get("created_at"),
+        "updated_at": payload.get("updated_at"),
         "pushed_at": payload.get("pushed_at"),
     }
 
@@ -2078,37 +2134,45 @@ def _normalize_github_rest_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def _upsert_github_repo_from_metadata(
     db: Session,
     *,
-    normalized_url: str,
+    github_url: str,
     metadata: dict[str, Any],
-    now: datetime,
-    headers: dict[str, str] | None = None,
 ) -> GitHubRepo:
-    existing = db.get(GitHubRepo, normalized_url)
-    repo = existing or GitHubRepo(
-        normalized_github_url=normalized_url,
-        owner=str(metadata.get("owner") or ""),
-        repo=str(metadata.get("repo") or ""),
-        first_seen_at=now,
-    )
+    canonical_url = normalize_github_url(github_url) or github_url
+    repo = db.get(GitHubRepo, canonical_url) or GitHubRepo(github_url=canonical_url)
 
-    repo.owner = str(metadata.get("owner") or repo.owner)
-    repo.repo = str(metadata.get("repo") or repo.repo)
-    if repo.github_id is None:
-        repo.github_id = metadata.get("github_id")
-    if repo.created_at is None:
-        repo.created_at = metadata.get("created_at")
-
-    repo.stars = metadata.get("stars")
-    repo.description = metadata.get("description") or ""
-    repo.homepage = metadata.get("homepage")
-    repo.topics_json = list(metadata.get("topics") or [])
-    repo.license = metadata.get("license")
-    repo.archived = bool(metadata.get("archived"))
-    repo.pushed_at = metadata.get("pushed_at")
-    repo.checked_at = now
-    if headers is not None:
-        repo.etag = headers.get("ETag") or repo.etag
-        repo.last_modified = headers.get("Last-Modified") or repo.last_modified
+    for key in [
+        "github_id",
+        "node_id",
+        "name_with_owner",
+        "description",
+        "homepage",
+        "stargazers_count",
+        "forks_count",
+        "size_kb",
+        "primary_language",
+        "topic",
+        "license_spdx_id",
+        "license_name",
+        "default_branch",
+        "is_private",
+        "visibility",
+        "is_fork",
+        "is_archived",
+        "is_template",
+        "is_disabled",
+        "has_issues",
+        "has_projects",
+        "has_wiki",
+        "has_discussions",
+        "allow_forking",
+        "web_commit_signoff_required",
+        "parent_github_url",
+        "source_github_url",
+        "created_at",
+        "updated_at",
+        "pushed_at",
+    ]:
+        setattr(repo, key, metadata.get(key))
     db.add(repo)
     return repo
 
@@ -2187,7 +2251,7 @@ async def _fetch_github_graphql_batch(
         if not isinstance(node, dict):
             fallback_urls.append(normalized_url)
             continue
-        resolved[normalized_url] = _normalize_github_graphql_payload(node)
+        resolved[normalized_url] = _normalize_github_graphql_payload(node, fallback_url=normalized_url)
     return resolved, fallback_urls, raw_fetch, None
 
 
@@ -2195,15 +2259,14 @@ async def _fetch_github_repo(
     session: aiohttp.ClientSession,
     limiter: RateLimiter,
     semaphore: asyncio.Semaphore,
-    normalized_url: str,
-    existing: GitHubRepo | None,
+    github_url: str,
 ) -> tuple[str, dict[str, Any] | None, dict[str, str], RawFetchEnvelope | None]:
     settings = get_settings()
-    owner_repo = extract_owner_repo(normalized_url)
+    owner_repo = extract_owner_repo(github_url)
     if owner_repo is None:
-        raise RuntimeError(f"{normalized_url} is not a valid GitHub repository URL")
+        raise RuntimeError(f"{github_url} is not a valid GitHub repository URL")
     owner, repo = owner_repo
-    headers = _github_api_headers(github_token=settings.github_token, existing=existing)
+    headers = _github_api_headers(github_token=settings.github_token)
 
     status, body, response_headers, error = await request_text(
         session,
@@ -2212,7 +2275,7 @@ async def _fetch_github_repo(
         semaphore=semaphore,
         rate_limiter=limiter,
         retry_prefix="GitHub API",
-        allowed_statuses={304, 404},
+        allowed_statuses={404},
     )
     raw_fetch = RawFetchEnvelope(
         provider="github",
@@ -2225,8 +2288,6 @@ async def _fetch_github_repo(
     )
     if error:
         raise RuntimeError(error)
-    if status == 304:
-        return "not_modified", None, response_headers, raw_fetch
     if status == 404:
         return "missing", None, response_headers, raw_fetch
     if body is None:
@@ -2262,7 +2323,7 @@ async def run_refresh_metadata(
     for paper in papers:
         if paper.repo_state is None:
             continue
-        repo_urls.update(paper.repo_state.repo_urls_json or [])
+        repo_urls.update(paper.repo_state.github_urls_json or [])
     resume_context = ItemResumeContext(
         job_id=job_id,
         attempt_series_key=attempt_series_key,
@@ -2282,7 +2343,6 @@ async def run_refresh_metadata(
         "resume_items_reused": len(resume_reused_keys),
         "resume_items_completed": 0,
         "updated": 0,
-        "not_modified": 0,
         "missing": 0,
         "skipped_locked": 0,
         "provider_counts": metrics["provider_counts"],
@@ -2346,8 +2406,7 @@ async def run_refresh_metadata(
                         continue
                     try:
                         persist_started = time.perf_counter()
-                        now = utc_now()
-                        _upsert_github_repo_from_metadata(db, normalized_url=normalized_url, metadata=metadata, now=now)
+                        _upsert_github_repo_from_metadata(db, github_url=normalized_url, metadata=metadata)
                         _record_resume_item_completed(db, resume_context, normalized_url)
                         db.commit()
                         stats["stage_seconds"]["persist"] += time.perf_counter() - persist_started
@@ -2377,7 +2436,6 @@ async def run_refresh_metadata(
                 _emit_progress(progress, stats)
                 continue
             try:
-                existing = db.get(GitHubRepo, normalized_url)
                 started = time.perf_counter()
                 try:
                     status, payload, headers, raw_fetch = await _fetch_github_repo(
@@ -2385,7 +2443,6 @@ async def run_refresh_metadata(
                         rest_limiter,
                         rest_semaphore,
                         normalized_url,
-                        existing,
                     )
                 except Exception:
                     stats["provider_counts"]["github"]["rest_failures"] += 1
@@ -2404,28 +2461,11 @@ async def run_refresh_metadata(
                         headers=raw_fetch.headers,
                     )
 
-                now = utc_now()
                 persist_started = time.perf_counter()
-                if status == "not_modified":
-                    if existing is not None:
-                        existing.checked_at = now
-                    _record_resume_item_completed(db, resume_context, normalized_url)
-                    stats["not_modified"] += 1
-                    stats["repos_completed"] += 1
-                    stats["resume_items_completed"] += 1
-                    db.commit()
-                    stats["stage_seconds"]["persist"] += time.perf_counter() - persist_started
-                    _update_runtime_stats(
-                        stats,
-                        started_at=started_at,
-                        processed_key="repos_completed",
-                        throughput_key="repos_per_minute",
-                    )
-                    _emit_progress(progress, stats)
-                    continue
                 if status == "missing":
+                    existing = db.get(GitHubRepo, normalized_url)
                     if existing is not None:
-                        existing.checked_at = now
+                        db.delete(existing)
                     _record_resume_item_completed(db, resume_context, normalized_url)
                     stats["missing"] += 1
                     stats["repos_completed"] += 1
@@ -2442,13 +2482,11 @@ async def run_refresh_metadata(
                     continue
 
                 assert payload is not None
-                metadata = _normalize_github_rest_payload(payload)
+                metadata = _normalize_github_rest_payload(payload, fallback_url=normalized_url)
                 _upsert_github_repo_from_metadata(
                     db,
-                    normalized_url=normalized_url,
+                    github_url=normalized_url,
                     metadata=metadata,
-                    now=now,
-                    headers=headers,
                 )
                 _record_resume_item_completed(db, resume_context, normalized_url)
                 db.commit()
@@ -2511,7 +2549,7 @@ def run_export(
         _run_stop_check(stop_check)
         state = paper.repo_state
         status = state.stable_status.value if state is not None else RepoStableStatus.unknown.value
-        primary_url = state.primary_repo_url if state is not None and state.primary_repo_url else ""
+        primary_url = state.primary_github_url if state is not None and state.primary_github_url else ""
         metadata = db.get(GitHubRepo, primary_url) if primary_url else None
         rows.append(
             {
@@ -2522,14 +2560,15 @@ def run_export(
                 "published_at": paper.published_at.isoformat() if paper.published_at else "",
                 "categories": ", ".join(paper.categories_json or []),
                 "primary_category": paper.primary_category or "",
-                "github_primary": primary_url,
-                "github_all": "; ".join((state.repo_urls_json if state is not None else []) or []),
+                "primary_github_url": primary_url,
+                "github_urls": "; ".join((state.github_urls_json if state is not None else []) or []),
                 "link_status": status,
-                "stars": metadata.stars if metadata is not None and metadata.stars is not None else "",
+                "stargazers_count": metadata.stargazers_count
+                if metadata is not None and metadata.stargazers_count is not None
+                else "",
                 "created_at": metadata.created_at if metadata is not None and metadata.created_at is not None else "",
                 "description": metadata.description if metadata is not None and metadata.description is not None else "",
                 "link_refresh_after": state.refresh_after.isoformat() if state is not None and state.refresh_after else "",
-                "repo_checked_at": metadata.checked_at.isoformat() if metadata is not None and metadata.checked_at else "",
             }
         )
 
@@ -2546,14 +2585,13 @@ def run_export(
                 "published_at",
                 "categories",
                 "primary_category",
-                "github_primary",
-                "github_all",
+                "primary_github_url",
+                "github_urls",
                 "link_status",
-                "stars",
+                "stargazers_count",
                 "created_at",
                 "description",
                 "link_refresh_after",
-                "repo_checked_at",
             ],
         )
         writer.writeheader()

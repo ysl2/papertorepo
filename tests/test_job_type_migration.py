@@ -59,6 +59,183 @@ def test_job_item_resume_progress_migration_creates_and_drops_table(tmp_path, mo
         assert "job_item_resume_progress" not in table_names_after
 
 
+def test_github_url_metadata_migration_canonicalizes_and_deduplicates(tmp_path, monkeypatch):
+    engine = create_engine(f"sqlite:///{tmp_path / 'migration-github-url.db'}")
+    module = _load_migration_module("0014_github_url_metadata.py")
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE github_repos (
+                    normalized_github_url TEXT PRIMARY KEY,
+                    github_id INTEGER,
+                    owner TEXT NOT NULL,
+                    repo TEXT NOT NULL,
+                    stars INTEGER,
+                    created_at TEXT,
+                    description TEXT,
+                    homepage TEXT,
+                    topics_json TEXT,
+                    license TEXT,
+                    archived BOOLEAN,
+                    pushed_at TEXT,
+                    first_seen_at DATETIME,
+                    checked_at DATETIME,
+                    etag TEXT,
+                    last_modified TEXT
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO github_repos (
+                    normalized_github_url, github_id, owner, repo, stars, created_at, description,
+                    homepage, topics_json, license, archived, pushed_at, first_seen_at, checked_at,
+                    etag, last_modified
+                )
+                VALUES
+                    (
+                        'https://github.com/Foo/Bar', 1, 'Foo', 'Bar', 10, '2020-01-01T00:00:00Z',
+                        'old description', 'https://old.example', :old_topics, 'MIT', 0,
+                        '2020-01-02T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z',
+                        'etag-old', 'modified-old'
+                    ),
+                    (
+                        'https://github.com/foo/bar', 2, 'foo', 'bar', 20, '2020-02-01T00:00:00Z',
+                        'new description', 'https://new.example', :new_topics, 'Apache-2.0', 1,
+                        '2020-02-02T00:00:00Z', '2026-02-01T00:00:00Z', '2026-02-01T00:00:00Z',
+                        'etag-new', 'modified-new'
+                    )
+                """
+            ),
+            {
+                "old_topics": json.dumps(["old"]),
+                "new_topics": json.dumps(["vision", "cv"]),
+            },
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE paper_repo_state (
+                    arxiv_id TEXT PRIMARY KEY,
+                    primary_repo_url TEXT,
+                    repo_urls_json TEXT
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO paper_repo_state (arxiv_id, primary_repo_url, repo_urls_json)
+                VALUES ('2604.12345', 'https://github.com/Foo/Bar.git', :repo_urls)
+                """
+            ),
+            {"repo_urls": json.dumps(["https://github.com/Foo/Bar.git", "https://github.com/foo/bar/issues"])},
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE repo_observations (
+                    id INTEGER PRIMARY KEY,
+                    observed_repo_url TEXT,
+                    normalized_repo_url TEXT
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO repo_observations (id, observed_repo_url, normalized_repo_url)
+                VALUES (1, 'https://github.com/Foo/Bar/issues/1', 'https://github.com/Foo/Bar.git')
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE job_item_resume_progress (
+                    id TEXT PRIMARY KEY,
+                    attempt_series_key TEXT NOT NULL,
+                    job_type TEXT NOT NULL,
+                    item_kind TEXT NOT NULL,
+                    item_key TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    source_job_id TEXT,
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE UNIQUE INDEX ix_job_item_resume_progress_item
+                ON job_item_resume_progress (attempt_series_key, job_type, item_kind, item_key)
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO job_item_resume_progress (
+                    id, attempt_series_key, job_type, item_kind, item_key, status, created_at, updated_at
+                )
+                VALUES (
+                    'resume-1', 'series-1', 'refresh_metadata', 'repo',
+                    'https://github.com/Foo/Bar.git', 'completed',
+                    '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
+                )
+                """
+            )
+        )
+
+        operations = Operations(MigrationContext.configure(connection))
+        monkeypatch.setattr(module, "op", operations)
+        module.upgrade()
+
+        github_columns = {
+            row.name
+            for row in connection.execute(text("PRAGMA table_info(github_repos)")).mappings()
+        }
+        assert "github_url" in github_columns
+        assert "stargazers_count" in github_columns
+        assert "topic" in github_columns
+        assert "normalized_github_url" not in github_columns
+        assert "owner" not in github_columns
+        assert "repo" not in github_columns
+        assert "stars" not in github_columns
+        assert "topics_json" not in github_columns
+        assert "checked_at" not in github_columns
+        assert "etag" not in github_columns
+        assert "last_modified" not in github_columns
+
+        github_rows = list(connection.execute(text("SELECT * FROM github_repos")).mappings())
+        assert len(github_rows) == 1
+        assert github_rows[0]["github_url"] == "https://github.com/foo/bar"
+        assert github_rows[0]["github_id"] == 2
+        assert github_rows[0]["name_with_owner"] == "foo/bar"
+        assert github_rows[0]["stargazers_count"] == 20
+        assert github_rows[0]["topic"] == "vision"
+        assert github_rows[0]["is_archived"] == 1
+
+        state = connection.execute(text("SELECT * FROM paper_repo_state")).mappings().one()
+        assert state["primary_github_url"] == "https://github.com/foo/bar"
+        assert json.loads(state["github_urls_json"]) == ["https://github.com/foo/bar"]
+
+        observation = connection.execute(text("SELECT * FROM repo_observations")).mappings().one()
+        assert observation["observed_github_url"] == "https://github.com/foo/bar"
+        assert observation["github_url"] == "https://github.com/foo/bar"
+
+        resume = connection.execute(text("SELECT item_key FROM job_item_resume_progress")).mappings().one()
+        assert resume["item_key"] == "https://github.com/foo/bar"
+
+
 def test_sync_papers_postgresql_enum_rename_does_not_reupdate_old_labels(monkeypatch):
     module = _load_migration_module("0011_rename_sync_papers.py")
     executed_sql: list[str] = []

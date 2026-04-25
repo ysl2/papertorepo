@@ -72,6 +72,8 @@ def normalize_github_url(url: str) -> str | None:
     if not result:
         return None
     owner, repo = result
+    owner = owner.lower()
+    repo = repo.lower()
     return f"https://github.com/{owner}/{repo}"
 
 

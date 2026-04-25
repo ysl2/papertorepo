@@ -9,8 +9,8 @@ def make_observation(*, provider: str, surface: str, url: str | None, status: st
         provider=provider,
         surface=surface,
         status=status,
-        observed_repo_url=url,
-        normalized_repo_url=url,
+        observed_github_url=url,
+        github_url=url,
         evidence_text=None,
         raw_cache_id=None,
         extractor_version="1",
@@ -28,7 +28,7 @@ def test_build_final_links_prefers_multi_provider_repo():
             make_observation(provider="alphaxiv", surface="paper_html", url="https://github.com/other/repo"),
         ],
     )
-    assert links[0]["normalized_repo_url"] == "https://github.com/foo/bar"
+    assert links[0]["github_url"] == "https://github.com/foo/bar"
     assert links[0]["is_primary"] is True
     assert links[0]["status"] == "ambiguous"
 
@@ -39,7 +39,7 @@ def test_parity_summary_reports_found_status():
         PaperRepoLink(
             id=1,
             arxiv_id="2603.12345",
-            normalized_repo_url="https://github.com/foo/bar",
+            github_url="https://github.com/foo/bar",
             status="found",
             providers=("arxiv",),
             surfaces=("arxiv:comment",),

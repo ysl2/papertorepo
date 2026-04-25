@@ -38,6 +38,10 @@ def _register_frontend(app: FastAPI) -> None:
     index_file = dist_dir / "index.html"
     if not index_file.exists():
         return
+    index_headers = {"Cache-Control": "no-cache"}
+
+    def index_response() -> FileResponse:
+        return FileResponse(index_file, headers=index_headers)
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_frontend(full_path: str) -> FileResponse:
@@ -47,9 +51,13 @@ def _register_frontend(app: FastAPI) -> None:
 
         requested = (dist_dir / full_path).resolve()
         if dist_dir == requested or dist_dir in requested.parents:
+            if requested == index_file:
+                return index_response()
             if requested.is_file():
                 return FileResponse(requested)
-        return FileResponse(index_file)
+        if full_path.startswith("assets/") or Path(full_path).suffix:
+            raise HTTPException(status_code=404)
+        return index_response()
 
 
 def create_app() -> FastAPI:

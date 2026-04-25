@@ -220,8 +220,8 @@ class PaperSummaryRead(BaseModel):
     primary_category: str | None
     comment: str | None
     link_status: RepoStableStatus
-    primary_repo_url: str | None
-    primary_repo_stars: int | None
+    primary_github_url: str | None
+    primary_github_stargazers_count: int | None
     stable_decided_at: datetime | None
     refresh_after: datetime | None
     last_attempt_at: datetime | None
@@ -233,23 +233,41 @@ class PaperRead(PaperSummaryRead):
     abstract: str
     doi: str | None
     journal_ref: str | None
-    repo_urls: list[str]
+    github_urls: list[str]
 
 
 class RepoRead(BaseModel):
-    normalized_github_url: str
-    owner: str
-    repo: str
-    stars: int | None
-    created_at: str | None
+    github_url: str
+    github_id: int | None
+    node_id: str | None
+    name_with_owner: str | None
     description: str | None
     homepage: str | None
-    topics_json: list[str]
-    license: str | None
-    archived: bool
+    stargazers_count: int | None
+    forks_count: int | None
+    size_kb: int | None
+    primary_language: str | None
+    topic: str | None
+    license_spdx_id: str | None
+    license_name: str | None
+    default_branch: str | None
+    is_private: bool | None
+    visibility: str | None
+    is_fork: bool | None
+    is_archived: bool | None
+    is_template: bool | None
+    is_disabled: bool | None
+    has_issues: bool | None
+    has_projects: bool | None
+    has_wiki: bool | None
+    has_discussions: bool | None
+    allow_forking: bool | None
+    web_commit_signoff_required: bool | None
+    parent_github_url: str | None
+    source_github_url: str | None
+    created_at: str | None
+    updated_at: str | None
     pushed_at: str | None
-    first_seen_at: datetime
-    checked_at: datetime | None
 
     model_config = {"from_attributes": True}
 

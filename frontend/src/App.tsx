@@ -125,8 +125,8 @@ type PaperSummary = {
   primary_category: string | null
   comment: string | null
   link_status: LinkStatus
-  primary_repo_url: string | null
-  primary_repo_stars: number | null
+  primary_github_url: string | null
+  primary_github_stargazers_count: number | null
   stable_decided_at: string | null
   refresh_after: string | null
   last_attempt_at: string | null
@@ -138,23 +138,41 @@ type PaperDetail = PaperSummary & {
   abstract: string
   doi: string | null
   journal_ref: string | null
-  repo_urls: string[]
+  github_urls: string[]
 }
 
 type Repo = {
-  normalized_github_url: string
-  owner: string
-  repo: string
-  stars: number | null
-  created_at: string | null
+  github_url: string
+  github_id: number | null
+  node_id: string | null
+  name_with_owner: string | null
   description: string | null
   homepage: string | null
-  topics_json: string[]
-  license: string | null
-  archived: boolean
+  stargazers_count: number | null
+  forks_count: number | null
+  size_kb: number | null
+  primary_language: string | null
+  topic: string | null
+  license_spdx_id: string | null
+  license_name: string | null
+  default_branch: string | null
+  is_private: boolean | null
+  visibility: string | null
+  is_fork: boolean | null
+  is_archived: boolean | null
+  is_template: boolean | null
+  is_disabled: boolean | null
+  has_issues: boolean | null
+  has_projects: boolean | null
+  has_wiki: boolean | null
+  has_discussions: boolean | null
+  allow_forking: boolean | null
+  web_commit_signoff_required: boolean | null
+  parent_github_url: string | null
+  source_github_url: string | null
+  created_at: string | null
+  updated_at: string | null
   pushed_at: string | null
-  first_seen_at: string
-  checked_at: string | null
 }
 
 type ExportRow = {
@@ -915,9 +933,8 @@ function queueJobProgressLabel(job: Job) {
     case 'refresh_metadata': {
       const considered = numericStat(job.stats_json, 'repos_considered')
       const updated = numericStat(job.stats_json, 'updated') ?? 0
-      const unchanged = numericStat(job.stats_json, 'not_modified') ?? 0
       const missing = numericStat(job.stats_json, 'missing') ?? 0
-      const checked = updated + unchanged + missing
+      const checked = updated + missing
       const parts: string[] = []
       if (considered !== null && considered > 0) {
         parts.push(`${formatInteger(checked)} / ${formatInteger(considered)} repos checked`)
@@ -925,7 +942,6 @@ function queueJobProgressLabel(job: Job) {
         parts.push(`${formatInteger(checked)} repos checked`)
       }
       if (updated > 0) parts.push(`${formatInteger(updated)} updated`)
-      if (unchanged > 0) parts.push(`${formatInteger(unchanged)} unchanged`)
       if (missing > 0) parts.push(`${formatInteger(missing)} missing`)
       return parts.join(' · ') || (displayStatus === 'stopping' ? 'Stop requested…' : 'Starting metadata refresh…')
     }
@@ -2304,7 +2320,7 @@ function App() {
 
   const repoByUrl = useMemo<Record<string, Repo>>(() => {
     const result: Record<string, Repo> = {}
-    for (const repo of repos) result[repo.normalized_github_url] = repo
+    for (const repo of repos) result[repo.github_url] = repo
     return result
   }, [repos])
 
@@ -2322,9 +2338,9 @@ function App() {
           published_at: paper.published_at || '',
           updated_at: paper.updated_at || '',
           comment: paper.comment || '',
-          repo_label: paper.primary_repo_url ? repoLabel(paper.primary_repo_url) : '',
-          repo_url: paper.primary_repo_url || '',
-          repo_stars: paper.primary_repo_stars,
+          repo_label: paper.primary_github_url ? repoLabel(paper.primary_github_url) : '',
+          repo_url: paper.primary_github_url || '',
+          repo_stars: paper.primary_github_stargazers_count,
           refresh_after: paper.refresh_after || '',
           search_blob: [
             paper.arxiv_id,
@@ -2333,7 +2349,7 @@ function App() {
             paper.categories_json.join(' '),
             paper.primary_category || '',
             paper.comment || '',
-            paper.primary_repo_url || '',
+            paper.primary_github_url || '',
           ]
             .join(' ')
             .trim(),
@@ -3027,8 +3043,8 @@ function App() {
         return <EmptyState title="No paper selected" detail="Select a paper to inspect its link state and repository context." />
       }
 
-      const repo = selectedPaper.primary_repo_url ? repoByUrl[selectedPaper.primary_repo_url] : undefined
-      const selectedPaperRepoUrls = selectedPaperDetail?.repo_urls ?? []
+      const repo = selectedPaper.primary_github_url ? repoByUrl[selectedPaper.primary_github_url] : undefined
+      const selectedPaperRepoUrls = selectedPaperDetail?.github_urls ?? []
       return (
         <div className="drawer-content">
           <div className="drawer-header">
@@ -3080,13 +3096,15 @@ function App() {
           <DetailBlock
             label="Repository"
             value={
-              selectedPaper.primary_repo_url ? (
+              selectedPaper.primary_github_url ? (
                 <div className="linked-card">
-                  <a className="table-link" href={selectedPaper.primary_repo_url} target="_blank" rel="noreferrer">
-                    {repoLabel(selectedPaper.primary_repo_url)}
+                  <a className="table-link" href={selectedPaper.primary_github_url} target="_blank" rel="noreferrer">
+                    {repoLabel(selectedPaper.primary_github_url)}
                   </a>
                   <p className="row-meta">
-                    {repo ? `${repo.stars ?? 0} stars · ${repo.license || 'no license'} · checked ${formatTime(repo.checked_at)}` : 'metadata not fetched yet'}
+                    {repo
+                      ? `${repo.stargazers_count ?? 0} stars · ${repo.license_spdx_id || repo.license_name || 'no license'} · updated ${formatTime(repo.updated_at)}`
+                      : 'metadata not fetched yet'}
                   </p>
                 </div>
               ) : (

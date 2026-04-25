@@ -61,8 +61,8 @@ class RepoObservation:
     provider: str
     surface: str
     status: str
-    observed_repo_url: str | None
-    normalized_repo_url: str | None
+    observed_github_url: str | None
+    github_url: str | None
     evidence_text: str | None
     raw_cache_id: int | None
     extractor_version: str
@@ -74,7 +74,7 @@ class RepoObservation:
 class PaperRepoLink:
     id: int
     arxiv_id: str
-    normalized_repo_url: str
+    github_url: str
     status: str
     providers: tuple[str, ...]
     surfaces: tuple[str, ...]
@@ -113,10 +113,12 @@ class ResourceLease:
 
 @dataclass(frozen=True)
 class GitHubRepoMetadata:
-    normalized_github_url: str
-    owner: str
-    repo: str
-    stars: int | None
+    github_url: str
+    name_with_owner: str | None
+    stargazers_count: int | None
     created_at: str | None
     description: str | None
-    checked_at: str | None = None
+    homepage: str | None = None
+    topic: str | None = None
+    license_spdx_id: str | None = None
+    license_name: str | None = None
