@@ -831,6 +831,17 @@ function canRerunJob(job: Job) {
   return isLatestAttempt(job)
 }
 
+function parentBatchBlocksChildRerun(parentJob: Job | null | undefined) {
+  if (!parentJob) return false
+  return jobDisplayStatus(parentJob) === 'stopping'
+}
+
+function canRerunJobInContext(job: Job, parentJob?: Job | null) {
+  if (!canRerunJob(job)) return false
+  if (job.parent_job_id && parentBatchBlocksChildRerun(parentJob)) return false
+  return true
+}
+
 function canStopJob(job: Job) {
   const displayStatus = jobDisplayStatus(job)
   if (job.stop_requested_at) return false
@@ -2333,11 +2344,13 @@ function App() {
           rowDepth,
           historyDepth,
           latestJob,
+          parentJob,
         }: {
           rowKind: JobRowKind
           rowDepth: number
           historyDepth: number
           latestJob?: Job
+          parentJob?: Job
         },
       ): JobGridRow {
         const groupKey = attemptGroupKey(job)
@@ -2372,7 +2385,7 @@ function App() {
           created_at: job.created_at,
           child_progress: job.child_summary ? childSummaryLabel(job.child_summary) : '',
           summary: isHistoryRow ? historySummary : jobSummary(job),
-          can_rerun: !isHistoryRow && canRerunJob(job),
+          can_rerun: !isHistoryRow && canRerunJobInContext(job, parentJob),
           rerun_busy: rerunningJobId === job.id,
           can_stop: !isHistoryRow && canStopJob(job),
           stop_busy: stoppingJobIds.includes(job.id),
@@ -2421,7 +2434,7 @@ function App() {
           const childGroupKey = attemptGroupKey(child)
           const childHistory = (jobAttemptHistories[childGroupKey] ?? []).filter((attempt) => attempt.id !== child.id)
 
-          rows.push(buildJobRow(child, { rowKind: 'child', rowDepth: 1, historyDepth: 0 }))
+          rows.push(buildJobRow(child, { rowKind: 'child', rowDepth: 1, historyDepth: 0, parentJob: job }))
 
           if (!expandedJobGroupSet.has(childGroupKey)) continue
 
@@ -2730,7 +2743,8 @@ function App() {
   const selectedJobSummary = (selectedJobId ? jobsById.get(selectedJobId) : null) || null
   const selectedJob = selectedJobDetail?.id === selectedJobId ? selectedJobDetail : selectedJobSummary
   const selectedExport = exportsData.find((row) => row.id === selectedExportId) || null
-  const selectedJobCanRerun = selectedJob ? canRerunJob(selectedJob) : false
+  const selectedJobParent = selectedJob?.parent_job_id ? rootJobById.get(selectedJob.parent_job_id) : null
+  const selectedJobCanRerun = selectedJob ? canRerunJobInContext(selectedJob, selectedJobParent) : false
   const selectedJobCanStop = selectedJob ? canStopJob(selectedJob) : false
   const paperTotalRows = Math.max(dashboard?.papers ?? 0, papers.length, papersLoadedCount)
   const paperProgressTotal = paperTotalRows > 0 ? paperTotalRows : undefined
@@ -3247,7 +3261,7 @@ function App() {
                           >
                             {stoppingJobIds.includes(child.id) ? 'Stopping…' : 'Stop'}
                           </button>
-                        ) : canRerunJob(child) ? (
+                        ) : canRerunJobInContext(child, selectedJob) ? (
                           <button
                             type="button"
                             className="ghost-button child-job-action"

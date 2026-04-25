@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+import logging
 import os
 import socket
 import uuid
@@ -44,6 +45,7 @@ from papertorepo.services.pipeline import (
 
 JOB_QUEUE_INIT_DATABASE_LOCK_ID = 649183502117041921
 JOB_QUEUE_REUSED_CHILD_LOCKED_BY = "batch-reuse"
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -350,22 +352,28 @@ def _child_summary_for_batch(job: Job, child_jobs: list[Job]) -> ChildSummary:
 
 
 def _batch_state_for_job(job: Job, child_summary: ChildSummary | None) -> str:
+    if job.status == JobStatus.running and job.stop_requested_at is not None:
+        return "stopping"
     if child_summary is not None and child_summary.stopping > 0:
         return "stopping"
+    if child_summary is not None:
+        if child_summary.running > 0:
+            return "running"
+        if child_summary.pending > 0:
+            return "queued"
+        if child_summary.failed > 0:
+            return "failed"
+        if child_summary.cancelled > 0:
+            return "cancelled"
+        return "succeeded"
     if job.status == JobStatus.pending:
         return "queued"
     if job.status == JobStatus.running:
-        return "stopping" if job.stop_requested_at is not None else "running"
+        return "running"
     if job.status == JobStatus.failed:
         return "failed"
-    if child_summary is None:
-        return "cancelled" if job.status == JobStatus.cancelled else "succeeded"
-    if child_summary.running > 0 or child_summary.pending > 0:
-        return "stopping" if job.stop_requested_at is not None else "running"
-    if job.status == JobStatus.cancelled or child_summary.cancelled > 0 or job.stop_requested_at is not None:
+    if job.status == JobStatus.cancelled:
         return "cancelled"
-    if child_summary.failed > 0:
-        return "failed"
     return "succeeded"
 
 
@@ -699,6 +707,15 @@ def _rerun_batch_child_job(db: Session, job: Job, scope: ScopePayload) -> Job:
     latest_parent = _latest_batch_root_attempt(db, parent_job)
     if latest_parent is None or latest_parent.id != parent_job.id:
         raise RuntimeError("Only child jobs from the latest batch attempt can be re-run")
+
+    parent_child_summary = _child_summary_for_batch(latest_parent, list_child_jobs(db, latest_parent.id))
+    parent_batch_state = _batch_state_for_job(latest_parent, parent_child_summary)
+    if parent_batch_state == "stopping":
+        logger.info(
+            "Rejected batch child rerun because parent batch is stopping",
+            extra={"job_id": job.id, "parent_job_id": latest_parent.id, "parent_batch_state": parent_batch_state},
+        )
+        raise RuntimeError("Child jobs from a stopping batch folder cannot be re-run")
 
     existing = _find_active_job(
         db,

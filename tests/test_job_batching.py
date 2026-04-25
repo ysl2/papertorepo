@@ -17,6 +17,7 @@ from papertorepo.jobs.queue import (
     process_job,
     rerun_job,
     serialize_job,
+    stop_job,
 )
 from papertorepo.jobs.batches import planned_child_scope_jsons
 from papertorepo.db.models import Job, JobAttemptMode, JobStatus, JobType
@@ -442,6 +443,88 @@ def test_rerun_api_supports_latest_batch_child_jobs(db_env):
     assert all(item["attempt_count"] == 3 for item in attempts)
 
 
+def test_rerun_api_rejects_batch_child_when_parent_is_stopping(db_env):
+    with session_scope() as db:
+        parent, children = _create_batch_with_child_states(
+            db,
+            JobType.sync_papers_batch,
+            JobType.sync_papers,
+            [(JobStatus.failed, False), (JobStatus.running, True)],
+            parent_stop_requested=True,
+        )
+        failed_child = children[0]
+        assert serialize_job(db, parent).batch_state == "stopping"
+
+    with TestClient(app) as client:
+        response = client.post(f"/api/v1/jobs/{failed_child.id}/rerun")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Child jobs from a stopping batch folder cannot be re-run"
+
+
+def test_rerun_api_allows_finished_batch_child_when_parent_is_running(db_env):
+    with session_scope() as db:
+        parent, children = _create_batch_with_child_states(
+            db,
+            JobType.sync_papers_batch,
+            JobType.sync_papers,
+            [(JobStatus.failed, False), (JobStatus.running, False)],
+        )
+        failed_child = children[0]
+        assert serialize_job(db, parent).batch_state == "running"
+
+    with TestClient(app) as client:
+        response = client.post(f"/api/v1/jobs/{failed_child.id}/rerun")
+
+    assert response.status_code == 200
+    assert response.json()["parent_job_id"] == parent.id
+    assert response.json()["attempt_mode"] == JobAttemptMode.repair.value
+
+
+def test_child_rerun_reactivates_cancelled_batch_until_child_finishes(db_env):
+    with session_scope() as db:
+        parent, children = _create_batch_with_child_states(
+            db,
+            JobType.sync_papers_batch,
+            JobType.sync_papers,
+            [
+                (JobStatus.cancelled, False),
+                (JobStatus.cancelled, False),
+                (JobStatus.succeeded, False),
+            ],
+            parent_stop_requested=True,
+        )
+        cancelled_child = children[0]
+        assert serialize_job(db, parent).batch_state == "cancelled"
+
+    with TestClient(app) as client:
+        response = client.post(f"/api/v1/jobs/{cancelled_child.id}/rerun")
+
+    assert response.status_code == 200
+    rerun_child_id = response.json()["id"]
+    assert response.json()["attempt_mode"] == JobAttemptMode.repair.value
+
+    with session_scope() as db:
+        parent_after_rerun = db.get(Job, parent.id)
+        rerun_child = db.get(Job, rerun_child_id)
+        assert parent_after_rerun is not None
+        assert rerun_child is not None
+        assert serialize_job(db, parent_after_rerun).batch_state == "queued"
+
+        rerun_child.status = JobStatus.running
+        rerun_child.started_at = rerun_child.created_at
+        rerun_child.locked_by = "worker:test"
+        rerun_child.locked_at = rerun_child.created_at
+        db.add(rerun_child)
+        assert serialize_job(db, parent_after_rerun).batch_state == "running"
+
+        rerun_child.status = JobStatus.succeeded
+        rerun_child.finished_at = rerun_child.created_at
+        rerun_child.locked_at = rerun_child.created_at
+        db.add(rerun_child)
+        assert serialize_job(db, parent_after_rerun).batch_state == "cancelled"
+
+
 def test_list_jobs_root_only_excludes_child_jobs(db_env):
     with session_scope() as db:
         parent = create_sync_papers_job(
@@ -484,6 +567,96 @@ def test_list_jobs_root_only_excludes_child_jobs(db_env):
 
 def _scope_label(scope_json: dict[str, object]) -> str:
     return str(scope_json.get("day") or scope_json.get("month") or f"{scope_json.get('from')}..{scope_json.get('to')}")
+
+
+def _batch_window_for_child_count(child_count: int) -> tuple[date, date]:
+    end_dates = {
+        2: date(2026, 5, 31),
+        3: date(2026, 6, 30),
+    }
+    return date(2026, 4, 1), end_dates[child_count]
+
+
+def _create_batch_with_child_states(
+    db,
+    parent_job_type: JobType,
+    child_job_type: JobType,
+    child_states: list[tuple[JobStatus, bool]],
+    *,
+    parent_stop_requested: bool = False,
+):
+    start_date, end_date = _batch_window_for_child_count(len(child_states))
+    parent = create_job(
+        db,
+        parent_job_type,
+        ScopePayload(categories=["cs.CV"], **{"from": start_date, "to": end_date}),
+    )
+    parent.status = JobStatus.succeeded
+    if parent_stop_requested:
+        parent.stop_requested_at = parent.created_at
+
+    planned_scopes = planned_child_scope_jsons(parent.job_type, parent.scope_json)
+    assert len(planned_scopes) == len(child_states)
+    children = []
+    for child_scope_json, (status, stop_requested) in zip(planned_scopes, child_states, strict=True):
+        child = create_job(
+            db,
+            child_job_type,
+            ScopePayload.model_validate(child_scope_json),
+            parent_job_id=parent.id,
+        )
+        child.status = status
+        if status == JobStatus.running:
+            child.started_at = child.created_at
+            child.locked_by = "worker:test"
+            child.locked_at = child.created_at
+        elif status in {JobStatus.succeeded, JobStatus.failed, JobStatus.cancelled}:
+            child.finished_at = child.created_at
+        if stop_requested:
+            child.stop_requested_at = child.created_at
+        db.add(child)
+        children.append(child)
+    db.add(parent)
+    return parent, children
+
+
+@pytest.mark.parametrize(
+    ("parent_job_type", "child_job_type"),
+    [
+        (JobType.sync_papers_batch, JobType.sync_papers),
+        (JobType.find_repos_batch, JobType.find_repos),
+        (JobType.refresh_metadata_batch, JobType.refresh_metadata),
+    ],
+)
+@pytest.mark.parametrize(
+    ("child_states", "expected_batch_state"),
+    [
+        ([(JobStatus.running, True), (JobStatus.failed, False)], "stopping"),
+        ([(JobStatus.running, False), (JobStatus.failed, False)], "running"),
+        ([(JobStatus.pending, False), (JobStatus.failed, False)], "queued"),
+        ([(JobStatus.failed, False), (JobStatus.cancelled, False)], "failed"),
+        ([(JobStatus.cancelled, False), (JobStatus.succeeded, False)], "cancelled"),
+        ([(JobStatus.succeeded, False), (JobStatus.succeeded, False)], "succeeded"),
+    ],
+)
+def test_batch_state_is_child_centric_for_all_batch_types(
+    db_env,
+    parent_job_type,
+    child_job_type,
+    child_states,
+    expected_batch_state,
+):
+    with session_scope() as db:
+        parent, _ = _create_batch_with_child_states(
+            db,
+            parent_job_type,
+            child_job_type,
+            child_states,
+            parent_stop_requested=True,
+        )
+        serialized = serialize_job(db, parent)
+
+    assert serialized.batch_state == expected_batch_state
 
 
 @pytest.mark.parametrize(
