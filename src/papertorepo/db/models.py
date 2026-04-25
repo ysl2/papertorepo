@@ -287,7 +287,6 @@ class GitHubRepo(Base):
     allow_forking: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     web_commit_signoff_required: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     parent_github_url: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    source_github_url: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
     updated_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
     pushed_at: Mapped[str | None] = mapped_column(String(64), nullable=True)

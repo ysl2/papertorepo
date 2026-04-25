@@ -134,6 +134,58 @@ def test_public_papers_returns_null_primary_github_stargazers_count_without_meta
     assert row["primary_github_stargazers_count"] is None
 
 
+def test_public_repos_returns_common_github_metadata_only(db_env):
+    with session_scope() as db:
+        db.add(
+            Paper(
+                arxiv_id="2604.15314",
+                abs_url="https://arxiv.org/abs/2604.15314",
+                title="Repo metadata paper",
+                abstract="Long abstract body",
+                published_at=at_utc_midnight(date(2026, 4, 16)),
+                updated_at=at_utc_midnight(date(2026, 4, 16)),
+                authors_json=["Alice"],
+                categories_json=["cs.CV"],
+                comment=None,
+                primary_category="cs.CV",
+                source_first_seen_at=utc_now(),
+                source_last_seen_at=utc_now(),
+            )
+        )
+        db.add(
+            PaperRepoState(
+                arxiv_id="2604.15314",
+                stable_status=RepoStableStatus.found,
+                primary_github_url="https://github.com/example/project",
+                github_urls_json=["https://github.com/example/project"],
+                stable_decided_at=utc_now(),
+                refresh_after=utc_now(),
+                last_attempt_at=utc_now(),
+                last_attempt_complete=True,
+                last_attempt_error=None,
+            )
+        )
+        db.add(
+            GitHubRepo(
+                github_url="https://github.com/example/project",
+                github_id=123,
+                node_id="R_123",
+                name_with_owner="example/project",
+                stargazers_count=321,
+                parent_github_url="https://github.com/example/parent",
+            )
+        )
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/repos?categories=cs.CV&month=2026-04&limit=10")
+
+    assert response.status_code == 200
+    row = response.json()[0]
+    assert row["github_url"] == "https://github.com/example/project"
+    assert row["parent_github_url"] == "https://github.com/example/parent"
+    assert "source_github_url" not in row
+
+
 def test_public_papers_supports_offset_paging(db_env):
     with session_scope() as db:
         for arxiv_id, title, published_at in [

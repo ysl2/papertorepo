@@ -236,6 +236,48 @@ def test_github_url_metadata_migration_canonicalizes_and_deduplicates(tmp_path, 
         assert resume["item_key"] == "https://github.com/foo/bar"
 
 
+def test_drop_source_github_url_migration_removes_only_source_column(tmp_path, monkeypatch):
+    engine = create_engine(f"sqlite:///{tmp_path / 'migration-drop-source-github-url.db'}")
+    module = _load_migration_module("0015_drop_source_github_url.py")
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE github_repos (
+                    github_url TEXT PRIMARY KEY,
+                    parent_github_url TEXT,
+                    source_github_url TEXT
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO github_repos (github_url, parent_github_url, source_github_url)
+                VALUES (
+                    'https://github.com/foo/fork',
+                    'https://github.com/foo/parent',
+                    'https://github.com/foo/source'
+                )
+                """
+            )
+        )
+
+        operations = Operations(MigrationContext.configure(connection))
+        monkeypatch.setattr(module, "op", operations)
+        module.upgrade()
+
+        columns = {row.name for row in connection.execute(text("PRAGMA table_info(github_repos)")).mappings()}
+        row = connection.execute(text("SELECT github_url, parent_github_url FROM github_repos")).mappings().one()
+
+    assert "source_github_url" not in columns
+    assert "parent_github_url" in columns
+    assert row["github_url"] == "https://github.com/foo/fork"
+    assert row["parent_github_url"] == "https://github.com/foo/parent"
+
+
 def test_sync_papers_postgresql_enum_rename_does_not_reupdate_old_labels(monkeypatch):
     module = _load_migration_module("0011_rename_sync_papers.py")
     executed_sql: list[str] = []

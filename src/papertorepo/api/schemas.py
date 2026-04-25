@@ -264,7 +264,6 @@ class RepoRead(BaseModel):
     allow_forking: bool | None
     web_commit_signoff_required: bool | None
     parent_github_url: str | None
-    source_github_url: str | None
     created_at: str | None
     updated_at: str | None
     pushed_at: str | None

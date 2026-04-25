@@ -169,7 +169,6 @@ type Repo = {
   allow_forking: boolean | null
   web_commit_signoff_required: boolean | null
   parent_github_url: string | null
-  source_github_url: string | null
   created_at: string | null
   updated_at: string | null
   pushed_at: string | null

@@ -976,6 +976,7 @@ async def test_refresh_metadata_uses_github_graphql_batch_with_token(db_env, mon
         assert "repo0:" in query
         assert "repo1:" in query
         assert "repositoryTopics(first: 1)" in query
+        assert "source { url }" not in query
         payload = {
             "data": {
                 "repo0": {
@@ -1003,7 +1004,6 @@ async def test_refresh_metadata_uses_github_graphql_batch_with_token(db_env, mon
                     "forkingAllowed": True,
                     "webCommitSignoffRequired": False,
                     "parent": {"url": "https://github.com/acme/parent"},
-                    "source": {"url": "https://github.com/acme/source"},
                     "createdAt": "2021-02-02T00:00:00Z",
                     "updatedAt": "2026-04-19T01:00:00Z",
                     "pushedAt": "2026-04-19T00:00:00Z",
@@ -1035,7 +1035,6 @@ async def test_refresh_metadata_uses_github_graphql_batch_with_token(db_env, mon
                     "forkingAllowed": True,
                     "webCommitSignoffRequired": True,
                     "parent": None,
-                    "source": {"url": "https://github.com/foo/bar"},
                     "createdAt": "2020-01-01T00:00:00Z",
                     "updatedAt": "2026-04-20T01:00:00Z",
                     "pushedAt": "2026-04-20T00:00:00Z",
@@ -1078,7 +1077,6 @@ async def test_refresh_metadata_uses_github_graphql_batch_with_token(db_env, mon
     assert foo_repo.license_spdx_id == "MIT"
     assert foo_repo.has_discussions is True
     assert foo_repo.web_commit_signoff_required is True
-    assert foo_repo.source_github_url == "https://github.com/foo/bar"
     assert acme_repo is not None
     assert acme_repo.stargazers_count == 456
     assert acme_repo.topic == "ml"

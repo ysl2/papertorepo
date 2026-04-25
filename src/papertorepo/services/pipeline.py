@@ -2025,7 +2025,6 @@ def _build_github_graphql_query(batch: list[tuple[str, str, str]]) -> str:
                 " forkingAllowed"
                 " webCommitSignoffRequired"
                 " parent { url }"
-                " source { url }"
                 " createdAt"
                 " updatedAt"
                 " pushedAt"
@@ -2054,7 +2053,6 @@ def _normalize_github_graphql_payload(payload: dict[str, Any], *, fallback_url: 
     primary_language = payload.get("primaryLanguage") if isinstance(payload.get("primaryLanguage"), dict) else {}
     default_branch = payload.get("defaultBranchRef") if isinstance(payload.get("defaultBranchRef"), dict) else {}
     parent = payload.get("parent") if isinstance(payload.get("parent"), dict) else {}
-    source = payload.get("source") if isinstance(payload.get("source"), dict) else {}
     return {
         "github_url": normalize_github_url(str(payload.get("url") or "")) or fallback_url,
         "github_id": payload.get("databaseId"),
@@ -2083,7 +2081,6 @@ def _normalize_github_graphql_payload(payload: dict[str, Any], *, fallback_url: 
         "allow_forking": payload.get("forkingAllowed"),
         "web_commit_signoff_required": payload.get("webCommitSignoffRequired"),
         "parent_github_url": normalize_github_url(str(parent.get("url") or "")),
-        "source_github_url": normalize_github_url(str(source.get("url") or "")),
         "created_at": payload.get("createdAt"),
         "updated_at": payload.get("updatedAt"),
         "pushed_at": payload.get("pushedAt"),
@@ -2093,7 +2090,6 @@ def _normalize_github_graphql_payload(payload: dict[str, Any], *, fallback_url: 
 def _normalize_github_rest_payload(payload: dict[str, Any], *, fallback_url: str) -> dict[str, Any]:
     license_info = payload.get("license") if isinstance(payload.get("license"), dict) else {}
     parent = payload.get("parent") if isinstance(payload.get("parent"), dict) else {}
-    source = payload.get("source") if isinstance(payload.get("source"), dict) else {}
     topics = payload.get("topics") if isinstance(payload.get("topics"), list) else []
     topic = next((item.strip() for item in topics if isinstance(item, str) and item.strip()), None)
     return {
@@ -2124,7 +2120,6 @@ def _normalize_github_rest_payload(payload: dict[str, Any], *, fallback_url: str
         "allow_forking": payload.get("allow_forking"),
         "web_commit_signoff_required": payload.get("web_commit_signoff_required"),
         "parent_github_url": normalize_github_url(str(parent.get("html_url") or "")),
-        "source_github_url": normalize_github_url(str(source.get("html_url") or "")),
         "created_at": payload.get("created_at"),
         "updated_at": payload.get("updated_at"),
         "pushed_at": payload.get("pushed_at"),
@@ -2167,7 +2162,6 @@ def _upsert_github_repo_from_metadata(
         "allow_forking",
         "web_commit_signoff_required",
         "parent_github_url",
-        "source_github_url",
         "created_at",
         "updated_at",
         "pushed_at",
