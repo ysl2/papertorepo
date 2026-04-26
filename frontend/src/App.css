@@ -91,6 +91,14 @@
   font-size: 12px;
 }
 
+.meta-chip-link {
+  text-decoration: none;
+}
+
+.meta-chip-link:hover {
+  background: rgba(26, 91, 71, 0.14);
+}
+
 .section-copy {
   display: grid;
   gap: 4px;

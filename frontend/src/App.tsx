@@ -3059,6 +3059,14 @@ function App() {
           <div className="drawer-tags">
             <StatusTag value={selectedPaper.link_status} />
             <span className="meta-chip">{selectedPaper.primary_category || 'uncategorized'}</span>
+            <a className="meta-chip meta-chip-link" href={selectedPaper.abs_url} target="_blank" rel="noreferrer">
+              arXiv
+            </a>
+            {selectedPaper.primary_github_url ? (
+              <a className="meta-chip meta-chip-link" href={selectedPaper.primary_github_url} target="_blank" rel="noreferrer">
+                GitHub
+              </a>
+            ) : null}
             <span className="meta-chip">{selectedPaper.published_at || 'no published date'}</span>
           </div>
 
