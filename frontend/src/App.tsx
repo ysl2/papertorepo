@@ -2535,7 +2535,6 @@ function App() {
         width: columnWidth('ID', 126),
         cellClass: 'mono-cell',
       },
-      { field: 'title', headerName: 'Title', width: columnWidth('Title', 460) },
       {
         field: 'categories_label',
         headerName: 'Category',
@@ -2551,10 +2550,11 @@ function App() {
           searchPlaceholder: 'Search categories',
         }),
       },
+      { field: 'title', headerName: 'Title', width: columnWidth('Title', 460) },
       {
         field: 'published_at',
         headerName: 'Published',
-        width: columnWidth('Published', 132),
+        width: columnWidth('Published', 156),
         filter: compactDateColumnFilter,
         filterParams: compactDateFilterParams,
         valueFormatter: (params) => formatPaperTableDate(String(params.value || '')),
@@ -2571,7 +2571,7 @@ function App() {
       {
         field: 'repo_language',
         headerName: 'Language',
-        width: columnWidth('Language', 148),
+        width: columnWidth('Language', 168),
         filter: compactValueColumnFilter,
         filterParams: createCompactSetFilterParams(),
       },
@@ -3528,7 +3528,7 @@ function App() {
         onSelectedKeyChange={setSelectedPaperId}
         onDisplayedKeysChange={handleDisplayedKeysChange}
         quickSearch={deferredTableSearch}
-        persistenceId="papertorepo-papers-v4"
+        persistenceId="papertorepo-papers-v5"
         emptyMessage="No papers are stored yet."
         toolbarLeading={sheetToolbarLeading}
         toolbarActions={sheetToolbarActions}
