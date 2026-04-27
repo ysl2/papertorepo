@@ -1029,7 +1029,7 @@ function formatAuthorLabel(authors: string[]) {
 }
 
 function formatRepoSize(sizeKb: number | null | undefined) {
-  if (typeof sizeKb !== 'number' || !Number.isFinite(sizeKb)) return '—'
+  if (typeof sizeKb !== 'number' || !Number.isFinite(sizeKb)) return ''
   const units = ['KB', 'MB', 'GB']
   let value = sizeKb
   let unitIndex = 0
@@ -1039,6 +1039,11 @@ function formatRepoSize(sizeKb: number | null | undefined) {
   }
   const formatted = Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/\.?0+$/, '')
   return `${formatted} ${units[unitIndex]}`
+}
+
+function formatPaperTableDate(value: string | null) {
+  if (!value) return ''
+  return formatDate(value)
 }
 
 function statusCellClass(value: unknown) {
@@ -2550,7 +2555,7 @@ function App() {
         width: columnWidth('Published', 132),
         filter: compactDateColumnFilter,
         filterParams: compactDateFilterParams,
-        valueFormatter: (params) => formatDate(String(params.value || '')),
+        valueFormatter: (params) => formatPaperTableDate(String(params.value || '')),
       },
       { field: 'repo_label', headerName: 'Repo', width: columnWidth('Repo', 220), cellClass: 'mono-cell' },
       {
@@ -2583,7 +2588,7 @@ function App() {
         width: columnWidth('Created', 146),
         filter: compactDateColumnFilter,
         filterParams: compactDateFilterParams,
-        valueFormatter: (params) => formatDate(String(params.value || '')),
+        valueFormatter: (params) => formatPaperTableDate(String(params.value || '')),
       },
       {
         field: 'repo_pushed_at',
@@ -2591,7 +2596,7 @@ function App() {
         width: columnWidth('Pushed', 146),
         filter: compactDateColumnFilter,
         filterParams: compactDateFilterParams,
-        valueFormatter: (params) => formatDate(String(params.value || '')),
+        valueFormatter: (params) => formatPaperTableDate(String(params.value || '')),
       },
       { field: 'journal_ref', headerName: 'Journal Ref', width: columnWidth('Journal Ref', 190) },
       { field: 'comment', headerName: 'Comment', width: columnWidth('Comment', 280) },
