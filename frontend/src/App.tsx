@@ -2554,7 +2554,7 @@ function App() {
       {
         field: 'published_at',
         headerName: 'Published',
-        width: columnWidth('Published', 156),
+        width: columnWidth('Published', 188),
         filter: compactDateColumnFilter,
         filterParams: compactDateFilterParams,
         valueFormatter: (params) => formatPaperTableDate(String(params.value || '')),
@@ -3528,7 +3528,7 @@ function App() {
         onSelectedKeyChange={setSelectedPaperId}
         onDisplayedKeysChange={handleDisplayedKeysChange}
         quickSearch={deferredTableSearch}
-        persistenceId="papertorepo-papers-v5"
+        persistenceId="papertorepo-papers-v6"
         emptyMessage="No papers are stored yet."
         toolbarLeading={sheetToolbarLeading}
         toolbarActions={sheetToolbarActions}
