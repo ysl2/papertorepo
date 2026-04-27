@@ -2603,14 +2603,14 @@ function App() {
       {
         field: 'repo_updated_at',
         headerName: 'Updated',
-        width: columnWidth('Updated', 146),
+        width: columnWidth('Updated', 168),
         filter: compactDateColumnFilter,
         filterParams: compactDateFilterParams,
         valueFormatter: (params) => formatPaperTableDate(String(params.value || '')),
       },
       { field: 'comment', headerName: 'Comment', width: columnWidth('Comment', 280) },
-      { field: 'journal_ref', headerName: 'Journal Ref', width: columnWidth('Journal Ref', 190) },
       { field: 'repo_description', headerName: 'Description', width: columnWidth('Description', 360) },
+      { field: 'journal_ref', headerName: 'Journal Ref', width: columnWidth('Journal Ref', 190) },
       { field: 'author_label', headerName: 'Author', width: columnWidth('Author', 280) },
     ],
     [],
@@ -3528,7 +3528,7 @@ function App() {
         onSelectedKeyChange={setSelectedPaperId}
         onDisplayedKeysChange={handleDisplayedKeysChange}
         quickSearch={deferredTableSearch}
-        persistenceId="papertorepo-papers-v3"
+        persistenceId="papertorepo-papers-v4"
         emptyMessage="No papers are stored yet."
         toolbarLeading={sheetToolbarLeading}
         toolbarActions={sheetToolbarActions}
