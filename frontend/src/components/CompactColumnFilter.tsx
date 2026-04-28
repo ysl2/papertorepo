@@ -48,6 +48,7 @@ type CompactConditionFilterProps = CustomFilterDisplayProps<unknown, unknown, Co
 export type CompactSetFilterParams = {
   filterKind: 'set'
   extractValues?: (row: RowRecord, fallbackValue: unknown) => string[]
+  blankOptionLabel?: string
   searchPlaceholder?: string
 }
 
@@ -84,6 +85,27 @@ type OperatorMeta = {
 
 function compareOptionValues(left: string, right: string) {
   return left.localeCompare(right, undefined, { sensitivity: 'base' })
+}
+
+const BLANK_SET_FILTER_VALUE = '__papertorepo_blank__'
+
+function blankSetFilterLabel(params: CompactSetFilterParams) {
+  const label = params.blankOptionLabel?.trim()
+  return label && label.length > 0 ? label : null
+}
+
+function isBlankSetFilterValue(value: string) {
+  return value === BLANK_SET_FILTER_VALUE
+}
+
+function setFilterOptionLabel(params: CompactSetFilterParams, value: string) {
+  return isBlankSetFilterValue(value) ? blankSetFilterLabel(params) ?? value : value
+}
+
+function compareSetFilterOptionValues(params: CompactSetFilterParams, left: string, right: string) {
+  if (isBlankSetFilterValue(left) && !isBlankSetFilterValue(right)) return -1
+  if (!isBlankSetFilterValue(left) && isBlankSetFilterValue(right)) return 1
+  return compareOptionValues(setFilterOptionLabel(params, left), setFilterOptionLabel(params, right))
 }
 
 function useGridRefreshVersion(api: GridApi<unknown>) {
@@ -893,6 +915,7 @@ function normalizeSetValues(model: SetFilterModel | null | undefined) {
 
 function extractSetValues(params: CompactSetFilterParams, row: RowRecord | null | undefined, fallbackValue: unknown) {
   if (!row) return []
+  const blankLabel = blankSetFilterLabel(params)
   const extracted =
     typeof params.extractValues === 'function'
       ? params.extractValues(row, fallbackValue)
@@ -901,7 +924,8 @@ function extractSetValues(params: CompactSetFilterParams, row: RowRecord | null 
         : fallbackValue == null
           ? []
           : [String(fallbackValue).trim()].filter(Boolean)
-  return Array.from(new Set(extracted.filter((value) => value.length > 0)))
+  const values = Array.from(new Set(extracted.filter((value) => value.length > 0)))
+  return values.length === 0 && blankLabel !== null ? [BLANK_SET_FILTER_VALUE] : values
 }
 
 function collectSetFilterStats(
@@ -930,7 +954,7 @@ function collectSetFilterStats(
     }
   }
 
-  const optionValues = Array.from(optionCounts.keys()).sort(compareOptionValues)
+  const optionValues = Array.from(optionCounts.keys()).sort((left, right) => compareSetFilterOptionValues(props, left, right))
   return {
     contextRowCount,
     optionCount: optionValues.length,
@@ -956,8 +980,8 @@ function CompactSetColumnFilter(props: CompactSetFilterProps) {
   const visibleOptions = useMemo(() => {
     const query = miniFilter.trim().toLowerCase()
     if (!query) return setStats.options
-    return setStats.options.filter((option) => option.value.toLowerCase().includes(query))
-  }, [miniFilter, setStats.options])
+    return setStats.options.filter((option) => setFilterOptionLabel(props, option.value).toLowerCase().includes(query))
+  }, [miniFilter, props, setStats.options])
   const allSelected = props.model === null || (allOptionValues.length > 0 && allOptionValues.every((option) => selectedValueSet.has(option)))
   const noneSelected = selectedValues.length === 0 && props.model !== null
   const queryActive = miniFilter.trim().length > 0
@@ -975,7 +999,7 @@ function CompactSetColumnFilter(props: CompactSetFilterProps) {
   })
 
   function applyValues(nextValues: string[]) {
-    const normalized = Array.from(new Set(nextValues)).sort(compareOptionValues)
+    const normalized = Array.from(new Set(nextValues)).sort((left, right) => compareSetFilterOptionValues(props, left, right))
     const nextModel =
       allOptionValues.length > 0 && normalized.length === allOptionValues.length && allOptionValues.every((option) => normalized.includes(option))
         ? null
@@ -1036,6 +1060,7 @@ function CompactSetColumnFilter(props: CompactSetFilterProps) {
         {visibleOptions.length > 0 ? (
           visibleOptions.map((option) => {
             const checked = props.model === null ? true : selectedValueSet.has(option.value)
+            const label = setFilterOptionLabel(props, option.value)
             return (
               <label
                 key={option.value}
@@ -1050,8 +1075,8 @@ function CompactSetColumnFilter(props: CompactSetFilterProps) {
                   onChange={() => toggleOption(option.value)}
                 />
                 <span className="compact-set-filter-option-copy">
-                  <span className="compact-set-filter-option-label" title={option.value}>
-                    {option.value}
+                  <span className="compact-set-filter-option-label" title={label}>
+                    {label}
                   </span>
                   <span className="compact-set-filter-option-count">{option.count.toLocaleString()}</span>
                 </span>

@@ -2635,7 +2635,7 @@ function App() {
         headerName: 'Language',
         width: columnWidth('Language', 168),
         filter: compactValueColumnFilter,
-        filterParams: createCompactSetFilterParams(),
+        filterParams: createCompactSetFilterParams({ blankOptionLabel: '(Blank)' }),
       },
       {
         field: 'repo_size_kb',
