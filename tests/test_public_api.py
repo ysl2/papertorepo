@@ -405,6 +405,7 @@ def test_public_dashboard_returns_job_queue_summary(db_env):
     assert payload["job_queue_summary"]["running"] == 1
     assert payload["job_queue_summary"]["pending"] == 1
     assert payload["job_queue_summary"]["stopping"] == 0
+    assert payload["jobs"] == 2
     assert payload["job_queue_summary"]["current_job"]["id"] == running_job.id
     assert payload["job_queue_summary"]["current_job"]["job_type"] == "find_repos"
     assert payload["job_queue_summary"]["next_job"]["id"] == queued_job.id

@@ -106,6 +106,7 @@ type Dashboard = {
   unknown: number
   repos: number
   exports: number
+  jobs: number
   pending_jobs: number
   running_jobs: number
   stopping_jobs: number
@@ -220,6 +221,7 @@ type SqlResult = {
 type SearchMode = 'idle' | 'quick' | 'sql'
 type SqlRunState = 'idle' | 'running' | 'canceling'
 type DetailKind = 'paper' | 'job' | 'export'
+type SqlSourceTable = 'papers' | 'jobs' | 'exports'
 type SqlEntityTarget = { kind: DetailKind; id: string }
 
 type ScopeState = {
@@ -354,6 +356,22 @@ function emptySqlColumnSource(): SqlColumnSource {
 
 function normalizeSqlColumnSources(columns: string[], sources: SqlColumnSource[]) {
   return columns.map((_, index) => sources[index] ?? emptySqlColumnSource())
+}
+
+function supportedSqlSourceTable(table: string | null): SqlSourceTable | null {
+  if (table === 'papers' || table === 'jobs' || table === 'exports') return table
+  return null
+}
+
+function uniqueSupportedSqlSourceTable(sources: SqlColumnSource[]): SqlSourceTable | null {
+  let table: SqlSourceTable | null = null
+  for (const source of sources) {
+    const sourceTable = supportedSqlSourceTable(source.source_table)
+    if (!sourceTable) return null
+    if (table !== null && sourceTable !== table) return null
+    table = sourceTable
+  }
+  return table
 }
 
 function createSqlRequestId() {
@@ -3822,9 +3840,25 @@ function App() {
 
   const activeLoadedRows = previewTab === 'papers' ? papers.length : previewTab === 'jobs' ? jobRows.length : exportsData.length
   const activeTotalRows = previewTab === 'papers' ? paperTotalRows : activeLoadedRows
+  const sqlSourceTable = sqlModeActive ? uniqueSupportedSqlSourceTable(sqlResult.columnSources) : null
+  const sqlSourceTotalRows =
+    sqlSourceTable === 'papers'
+      ? dashboard?.papers
+      : sqlSourceTable === 'jobs'
+        ? dashboard?.jobs
+        : sqlSourceTable === 'exports'
+          ? dashboard?.exports
+          : undefined
   const tableSummaryLabel = sqlModeActive
-    ? `SQL · ${sqlResult.rowCount.toLocaleString()} rows`
+    ? sqlSourceTable && sqlSourceTotalRows !== undefined
+      ? `${sqlResult.rowCount.toLocaleString()} / ${sqlSourceTotalRows.toLocaleString()} rows`
+      : `SQL · ${sqlResult.rowCount.toLocaleString()} rows`
     : `${visibleKeys.length.toLocaleString()} / ${activeTotalRows.toLocaleString()} rows`
+  const tableSummaryTitle = sqlModeActive
+    ? sqlSourceTable && sqlSourceTotalRows !== undefined
+      ? `SQL returned ${sqlResult.rowCount.toLocaleString()} rows; ${sqlSourceTable} has ${sqlSourceTotalRows.toLocaleString()} total rows.`
+      : `SQL returned ${sqlResult.rowCount.toLocaleString()} rows.`
+    : 'Rows currently shown / rows in total'
 
   const sheetToolbarLeading = (
     <div className="tab-strip">
@@ -3870,7 +3904,7 @@ function App() {
   )
 
   const sheetToolbarSummary = (
-    <span className="sheet-inline-summary" title="Rows currently shown / rows in total">
+    <span className="sheet-inline-summary" title={tableSummaryTitle}>
       {tableSummaryLabel}
     </span>
   )

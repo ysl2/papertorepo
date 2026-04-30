@@ -521,6 +521,7 @@ def get_dashboard_stats(db: Session, scope_json: dict[str, Any]) -> dict[str, An
         select(func.count()).select_from(GitHubRepo).where(GitHubRepo.github_url.in_(repo_urls))
     ) or 0
     counts["exports"] = db.scalar(select(func.count()).select_from(ExportRecord)) or 0
+    counts["jobs"] = db.scalar(select(func.count()).select_from(Job)) or 0
     counts["pending_jobs"] = db.scalar(select(func.count()).select_from(Job).where(Job.status == JobStatus.pending)) or 0
     counts["stopping_jobs"] = db.scalar(
         select(func.count()).select_from(Job).where(Job.status == JobStatus.running, Job.stop_requested_at.is_not(None))

@@ -202,6 +202,7 @@ class DashboardStats(BaseModel):
     unknown: int
     repos: int
     exports: int
+    jobs: int
     pending_jobs: int
     running_jobs: int
     stopping_jobs: int
