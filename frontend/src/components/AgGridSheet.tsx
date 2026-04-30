@@ -54,6 +54,7 @@ type AgGridSheetProps<TData extends RowRecord = RowRecord> = {
   onReset?: () => void
   loading?: boolean
   loadingLabel?: string
+  gridProgressActive?: boolean
   progressCurrent?: number
   progressTotal?: number
   loadingSummaryMode?: 'counts' | 'labelOnly'
@@ -263,6 +264,7 @@ export default function AgGridSheet<TData extends RowRecord>({
   onReset,
   loading = false,
   loadingLabel = 'Loading rows…',
+  gridProgressActive = false,
   progressCurrent,
   progressTotal,
   loadingSummaryMode = 'counts',
@@ -561,6 +563,11 @@ export default function AgGridSheet<TData extends RowRecord>({
       </div>
 
       <div className={blockingLoad ? 'ag-theme-balham sheet-grid-host loading' : 'ag-theme-balham sheet-grid-host'}>
+        {gridProgressActive ? (
+          <div className="sheet-grid-top-progress" role="status" aria-live="polite" aria-label="SQL query running">
+            <span className="sheet-loading-meter-bar indeterminate" aria-hidden="true" />
+          </div>
+        ) : null}
         {blockingLoad ? (
           <div className="sheet-grid-loading-overlay" role="status" aria-live="polite">
             <strong>{loadingLabel}</strong>

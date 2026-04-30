@@ -978,12 +978,40 @@ summary:focus {
   flex: 1 1 260px;
   min-width: 0;
   max-width: none;
+  position: relative;
 }
 
 .sheet-search-field input {
   min-height: 38px;
   padding: 0 14px;
   border-radius: 12px;
+}
+
+.sheet-search-field.busy input {
+  padding-right: 108px;
+}
+
+.sheet-search-cancel-button {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  min-height: 28px;
+  max-width: 96px;
+  padding: 0 10px;
+  transform: translateY(-50%);
+  border: 1px solid rgba(138, 63, 42, 0.24);
+  border-radius: 8px;
+  background: #fff8f4;
+  color: #8a3f2a;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.sheet-search-cancel-button:disabled {
+  cursor: wait;
+  opacity: 0.72;
 }
 
 .sheet-inline-summary {
@@ -1177,6 +1205,22 @@ summary:focus {
 .sheet-loading-meter-bar.indeterminate {
   width: 36%;
   animation: sheet-loading-slide 1.1s ease-in-out infinite;
+}
+
+.sheet-grid-top-progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 6;
+  height: 2px;
+  overflow: hidden;
+  background: rgba(26, 91, 71, 0.08);
+  pointer-events: none;
+}
+
+.sheet-grid-top-progress .sheet-loading-meter-bar {
+  width: 36%;
 }
 
 .sheet-grid-loading-overlay {

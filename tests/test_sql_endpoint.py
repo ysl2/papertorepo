@@ -5,7 +5,13 @@ from datetime import date, datetime, timezone
 from fastapi.testclient import TestClient
 
 from papertorepo.api.app import app
-from papertorepo.api.routes import _sql_column_sources_from_pgresult
+from papertorepo.api.routes import (
+    _cancel_sql_request,
+    _execute_driver_sql,
+    _register_sql_request,
+    _sql_column_sources_from_pgresult,
+    _unregister_sql_request,
+)
 from papertorepo.db.session import session_scope
 from papertorepo.db.models import Paper, utc_now
 
@@ -156,6 +162,71 @@ def test_sql_datetime_columns_serialized_as_strings(db_env):
     assert body["ok"] is True
     row = body["rows"][0]
     assert isinstance(row["published_at"], str)
+
+
+def test_sql_request_id_cleans_up_after_execution(db_env):
+    with TestClient(app) as client:
+        response = client.post("/api/v1/sql", json={"query": "SELECT 1", "request_id": "req-cleanup"})
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+
+    with TestClient(app) as client:
+        cancel_response = client.post("/api/v1/sql/req-cleanup/cancel")
+
+    assert cancel_response.status_code == 200
+    cancel_body = cancel_response.json()
+    assert cancel_body["ok"] is True
+    assert cancel_body["request_id"] == "req-cleanup"
+    assert cancel_body["cancel_requested"] is False
+
+
+def test_sql_duplicate_active_request_id_is_rejected(db_env):
+    request_id = "req-duplicate"
+    assert _register_sql_request(request_id, None) is True
+    try:
+        with session_scope() as db:
+            response = _execute_driver_sql(db, "SELECT 1", request_id=request_id)
+    finally:
+        _unregister_sql_request(request_id)
+
+    assert response.ok is False
+    assert response.message is not None
+    assert "already running" in response.message
+
+
+class FakeCancelableConnection:
+    def __init__(self) -> None:
+        self.cancel_safe_calls: list[float] = []
+
+    def cancel_safe(self, *, timeout: float) -> None:
+        self.cancel_safe_calls.append(timeout)
+
+
+def test_sql_cancel_running_request_calls_cancel_safe():
+    request_id = "req-cancel-safe"
+    connection = FakeCancelableConnection()
+    assert _register_sql_request(request_id, connection) is True
+    try:
+        response = _cancel_sql_request(request_id)
+    finally:
+        _unregister_sql_request(request_id)
+
+    assert response.ok is True
+    assert response.request_id == request_id
+    assert response.cancel_requested is True
+    assert connection.cancel_safe_calls == [2.0]
+
+
+def test_sql_cancel_unknown_request_is_benign():
+    with TestClient(app) as client:
+        response = client.post("/api/v1/sql/unknown-sql-request/cancel")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["request_id"] == "unknown-sql-request"
+    assert body["cancel_requested"] is False
 
 
 class FakePgResult:

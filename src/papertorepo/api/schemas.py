@@ -289,6 +289,7 @@ class ExportRead(BaseModel):
 
 class SqlRequest(BaseModel):
     query: str
+    request_id: str | None = None
 
 
 class SqlColumnSource(BaseModel):
@@ -304,4 +305,11 @@ class SqlResponse(BaseModel):
     column_sources: list[SqlColumnSource]
     rows: list[dict[str, Any]]
     row_count: int
+    message: str | None
+
+
+class SqlCancelResponse(BaseModel):
+    ok: bool
+    request_id: str
+    cancel_requested: bool
     message: str | None

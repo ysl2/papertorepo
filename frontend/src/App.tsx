@@ -203,6 +203,13 @@ type SqlResponse = {
   message: string | null
 }
 
+type SqlCancelResponse = {
+  ok: boolean
+  request_id: string
+  cancel_requested: boolean
+  message: string | null
+}
+
 type SqlResult = {
   columns: string[]
   columnSources: SqlColumnSource[]
@@ -211,6 +218,7 @@ type SqlResult = {
 }
 
 type SearchMode = 'idle' | 'quick' | 'sql'
+type SqlRunState = 'idle' | 'running' | 'canceling'
 type DetailKind = 'paper' | 'job' | 'export'
 type SqlEntityTarget = { kind: DetailKind; id: string }
 
@@ -346,6 +354,13 @@ function emptySqlColumnSource(): SqlColumnSource {
 
 function normalizeSqlColumnSources(columns: string[], sources: SqlColumnSource[]) {
   return columns.map((_, index) => sources[index] ?? emptySqlColumnSource())
+}
+
+function createSqlRequestId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
 async function copyText(value: string) {
@@ -1619,6 +1634,7 @@ function App() {
   const [tableSearchCommitted, setTableSearchCommitted] = useState('')
   const [tableSearchRunId, setTableSearchRunId] = useState(0)
   const [searchMode, setSearchMode] = useState<SearchMode>('idle')
+  const [sqlRunState, setSqlRunState] = useState<SqlRunState>('idle')
   const [sqlResult, setSqlResult] = useState<SqlResult | null>(null)
   const [sqlFeedbackMessage, setSqlFeedbackMessage] = useState<string | null>(null)
   const [selectedPaperId, setSelectedPaperId] = useState<string | null>(null)
@@ -1659,6 +1675,8 @@ function App() {
   const queueHandoffTimeoutRef = useRef<number | null>(null)
   const copyFeedbackTimeoutRef = useRef<number | null>(null)
   const sqlFeedbackTimeoutRef = useRef<number | null>(null)
+  const activeSqlRequestIdRef = useRef<string | null>(null)
+  const activeSqlAbortControllerRef = useRef<AbortController | null>(null)
   const selectedJobDetailHydratedJobIdRef = useRef<string | null>(null)
   const selectedJobChildrenHydratedJobIdRef = useRef<string | null>(null)
   const selectedJobAttemptsHydratedJobIdRef = useRef<string | null>(null)
@@ -1707,6 +1725,7 @@ function App() {
 
   const liveScope = useMemo(() => resolveScope(scope), [scope])
   const sqlModeActive = searchMode === 'sql' && sqlResult !== null
+  const sqlBusy = sqlRunState !== 'idle'
   const filteredPaperIds = previewTab === 'papers' && !sqlModeActive ? visibleKeys : []
   const filteredPaperExportReady = previewTab === 'papers' && filteredPaperIds.length > 0
 
@@ -1746,6 +1765,45 @@ function App() {
   const ignoreDisplayedKeysChange = useCallback((keys: string[]) => {
     void keys
   }, [])
+
+  const cancelActiveSql = useCallback(
+    async (options: { showFeedback?: boolean } = {}) => {
+      const { showFeedback = true } = options
+      const requestId = activeSqlRequestIdRef.current
+      const controller = activeSqlAbortControllerRef.current
+      if (!requestId) {
+        if (sqlRunState === 'canceling') return
+        setSqlRunState('idle')
+        return
+      }
+
+      activeSqlRequestIdRef.current = null
+      activeSqlAbortControllerRef.current = null
+      setSqlRunState('canceling')
+      controller?.abort()
+
+      try {
+        const response = await fetchJson<SqlCancelResponse>(`/api/v1/sql/${encodeURIComponent(requestId)}/cancel`, {
+          method: 'POST',
+        })
+        if (!showFeedback) return
+        if (response.ok) {
+          showSqlFeedback('Canceled')
+        } else {
+          showSqlFeedback(response.message || 'Cancel requested, but backend cancel could not be confirmed')
+        }
+      } catch {
+        if (showFeedback) {
+          showSqlFeedback('Cancel requested, but backend cancel could not be confirmed')
+        }
+      } finally {
+        if (activeSqlRequestIdRef.current === null) {
+          setSqlRunState('idle')
+        }
+      }
+    },
+    [showSqlFeedback, sqlRunState],
+  )
 
   const handleCopyText = useCallback(
     async (value: string, label: string) => {
@@ -1795,17 +1853,21 @@ function App() {
   useEffect(() => {
     const query = tableSearchCommitted.trim()
     if (!query) return
+    const requestId = activeSqlRequestIdRef.current
+    if (!requestId) return
 
     const controller = new AbortController()
+    activeSqlAbortControllerRef.current = controller
+    setSqlRunState('running')
 
     async function executeSql() {
       try {
         const response = await fetchJson<SqlResponse>('/api/v1/sql', {
           method: 'POST',
-          body: JSON.stringify({ query }),
+          body: JSON.stringify({ query, request_id: requestId }),
           signal: controller.signal,
         })
-        if (controller.signal.aborted) return
+        if (controller.signal.aborted || activeSqlRequestIdRef.current !== requestId) return
 
         if (response.ok && response.has_result_set) {
           setSqlResult({
@@ -1827,6 +1889,7 @@ function App() {
         }
 
         setSqlResult(null)
+        if (activeSqlRequestIdRef.current !== requestId) return
         if (response.ok) {
           setSearchMode('idle')
           if (response.message) {
@@ -1840,10 +1903,17 @@ function App() {
 
         setSearchMode('quick')
       } catch (err) {
+        if (isAbortError(err) || activeSqlRequestIdRef.current !== requestId) return
         if (!isAbortError(err) && err instanceof Error) {
           setSearchMode('quick')
           setSqlResult(null)
           setError(`SQL: ${err.message}`)
+        }
+      } finally {
+        if (activeSqlRequestIdRef.current === requestId) {
+          activeSqlRequestIdRef.current = null
+          activeSqlAbortControllerRef.current = null
+          setSqlRunState('idle')
         }
       }
     }
@@ -3324,10 +3394,20 @@ function App() {
   }
 
   function commitTableSearch() {
+    if (sqlBusy) return
     clearSqlFeedback()
+    const query = tableSearchInput.trim()
+    if (query) {
+      activeSqlRequestIdRef.current = createSqlRequestId()
+      activeSqlAbortControllerRef.current = null
+      setSqlRunState('running')
+    }
     setTableSearchCommitted(tableSearchInput)
     setTableSearchRunId((value) => value + 1)
-    if (!tableSearchInput.trim()) {
+    if (!query) {
+      activeSqlRequestIdRef.current = null
+      activeSqlAbortControllerRef.current = null
+      setSqlRunState('idle')
       setSearchMode('idle')
       setSqlResult(null)
       setVisibleKeys([])
@@ -3335,6 +3415,9 @@ function App() {
   }
 
   function clearTableSearchState() {
+    if (sqlBusy) {
+      void cancelActiveSql({ showFeedback: false })
+    }
     setTableSearchInput('')
     setTableSearchCommitted('')
     setSearchMode('idle')
@@ -3758,7 +3841,7 @@ function App() {
   )
 
   const sheetToolbarSearch = (
-    <label className="sheet-search-field">
+    <div className={sqlBusy ? 'sheet-search-field busy' : 'sheet-search-field'}>
       <input
         className="floating-placeholder-input"
         value={tableSearchInput}
@@ -3770,8 +3853,20 @@ function App() {
         }}
         placeholder={SQL_SEARCH_PLACEHOLDER}
         aria-label="Search or SQL"
+        aria-busy={sqlBusy}
+        disabled={sqlBusy}
       />
-    </label>
+      {sqlBusy ? (
+        <button
+          type="button"
+          className="sheet-search-cancel-button"
+          onClick={() => void cancelActiveSql()}
+          disabled={sqlRunState === 'canceling'}
+        >
+          {sqlRunState === 'canceling' ? 'Canceling...' : 'Cancel'}
+        </button>
+      ) : null}
+    </div>
   )
 
   const sheetToolbarSummary = (
@@ -3887,7 +3982,8 @@ function App() {
         toolbarMessage={sheetToolbarMessage}
         toolbarAfterSummary={sheetToolbarExport}
         onReset={clearTableSearchState}
-        loading={sqlModeActive ? false : papersLoading}
+        gridProgressActive={sqlBusy}
+        loading={sqlBusy || sqlModeActive ? false : papersLoading}
         loadingLabel={papers.length > 0 ? 'Refreshing papers…' : 'Loading papers…'}
         loadingSummaryMode="labelOnly"
         progressCurrent={papersLoadedCount}
@@ -3912,6 +4008,7 @@ function App() {
         toolbarSummary={sheetToolbarSummary}
         toolbarMessage={sheetToolbarMessage}
         onReset={clearTableSearchState}
+        gridProgressActive={sqlBusy}
         getRowClass={(row) => {
           if (sqlModeActive) return undefined
           const classes: string[] = []
@@ -3940,7 +4037,8 @@ function App() {
         toolbarSummary={sheetToolbarSummary}
         toolbarMessage={sheetToolbarMessage}
         onReset={clearTableSearchState}
-        loading={sqlModeActive ? false : exportsLoading}
+        gridProgressActive={sqlBusy}
+        loading={sqlBusy || sqlModeActive ? false : exportsLoading}
         loadingLabel={exportsData.length > 0 ? 'Refreshing exports…' : 'Loading exports…'}
       />
     )

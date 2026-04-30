@@ -4,6 +4,7 @@ import logging
 from collections.abc import Callable
 from datetime import date
 from pathlib import Path
+from threading import Lock
 from typing import Literal
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, status
@@ -39,6 +40,7 @@ from papertorepo.api.schemas import (
     PaperSummaryRead,
     RepoRead,
     ScopePayload,
+    SqlCancelResponse,
     SqlRequest,
     SqlResponse,
 )
@@ -52,6 +54,9 @@ from papertorepo.services.pipeline import (
 )
 
 logger = logging.getLogger(__name__)
+SQL_CANCEL_TIMEOUT_SECONDS = 2.0
+_sql_running_requests_lock = Lock()
+_sql_running_requests: dict[str, object | None] = {}
 
 
 def _scope_from_query(
@@ -375,6 +380,18 @@ def _sql_response_from_cursor(cursor: object, raw_connection: object | None = No
     )
 
 
+def _sql_error_response(message: str) -> SqlResponse:
+    return SqlResponse(
+        ok=False,
+        has_result_set=False,
+        columns=[],
+        column_sources=[],
+        rows=[],
+        row_count=0,
+        message=message,
+    )
+
+
 def _driver_connection_from_session(db: Session) -> object:
     proxied_connection = db.connection().connection
     return getattr(
@@ -384,10 +401,70 @@ def _driver_connection_from_session(db: Session) -> object:
     )
 
 
-def _execute_driver_sql(db: Session, query: str) -> SqlResponse:
-    raw_connection = _driver_connection_from_session(db)
-    cursor = raw_connection.cursor()
+def _register_sql_request(request_id: str, raw_connection: object | None) -> bool:
+    with _sql_running_requests_lock:
+        if request_id in _sql_running_requests:
+            return False
+        _sql_running_requests[request_id] = raw_connection
+        return True
+
+
+def _unregister_sql_request(request_id: str) -> None:
+    with _sql_running_requests_lock:
+        _sql_running_requests.pop(request_id, None)
+
+
+def _cancel_sql_request(request_id: str) -> SqlCancelResponse:
+    with _sql_running_requests_lock:
+        raw_connection = _sql_running_requests.get(request_id)
+
+    if raw_connection is None:
+        return SqlCancelResponse(
+            ok=True,
+            request_id=request_id,
+            cancel_requested=False,
+            message="SQL request is not running or is not cancelable",
+        )
+
     try:
+        cancel_safe = getattr(raw_connection, "cancel_safe", None)
+        if callable(cancel_safe):
+            cancel_safe(timeout=SQL_CANCEL_TIMEOUT_SECONDS)
+        else:
+            cancel = getattr(raw_connection, "cancel")
+            cancel()
+    except Exception as exc:
+        logger.warning("SQL cancellation failed for request %s: %s", request_id, exc)
+        return SqlCancelResponse(
+            ok=False,
+            request_id=request_id,
+            cancel_requested=False,
+            message=str(exc),
+        )
+
+    logger.info("SQL cancellation requested for %s", request_id)
+    return SqlCancelResponse(
+        ok=True,
+        request_id=request_id,
+        cancel_requested=True,
+        message="Cancel requested",
+    )
+
+
+def _execute_driver_sql(db: Session, query: str, request_id: str | None = None) -> SqlResponse:
+    raw_connection = _driver_connection_from_session(db)
+    is_postgresql = db.bind is not None and db.bind.dialect.name == "postgresql"
+    registered_request_id: str | None = None
+    cursor = None
+
+    if request_id:
+        cancel_connection = raw_connection if is_postgresql else None
+        if not _register_sql_request(request_id, cancel_connection):
+            return _sql_error_response(f"SQL request {request_id} is already running")
+        registered_request_id = request_id
+
+    try:
+        cursor = raw_connection.cursor()
         if db.bind is not None and db.bind.dialect.name == "postgresql":
             cursor.execute(query, prepare=False)
         else:
@@ -403,17 +480,12 @@ def _execute_driver_sql(db: Session, query: str) -> SqlResponse:
         db.rollback()
         error_message = str(exc)
         logger.warning("SQL execution failed: %s", error_message)
-        return SqlResponse(
-            ok=False,
-            has_result_set=False,
-            columns=[],
-            column_sources=[],
-            rows=[],
-            row_count=0,
-            message=error_message,
-        )
+        return _sql_error_response(error_message)
     finally:
-        cursor.close()
+        if cursor is not None:
+            cursor.close()
+        if registered_request_id is not None:
+            _unregister_sql_request(registered_request_id)
 
 
 def register_routes(app: FastAPI) -> None:
@@ -660,6 +732,10 @@ def register_routes(app: FastAPI) -> None:
                 row_count=0,
                 message="Empty query",
             )
-        return _execute_driver_sql(db, query)
+        return _execute_driver_sql(db, query, request_id=request.request_id)
+
+    @router.post("/sql/{request_id}/cancel", response_model=SqlCancelResponse)
+    def cancel_sql(request_id: str) -> SqlCancelResponse:
+        return _cancel_sql_request(request_id)
 
     app.include_router(router)
