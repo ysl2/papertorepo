@@ -996,6 +996,23 @@ summary:focus {
   white-space: nowrap;
 }
 
+.sheet-feedback-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: min(360px, 24vw);
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--ink);
+  background: var(--surface);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .sheet-frame {
   min-width: 0;
   min-height: 0;
@@ -1061,6 +1078,13 @@ summary:focus {
 
 .sheet-grid-toolbar-summary {
   flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+}
+
+.sheet-grid-toolbar-message {
+  flex: 0 1 auto;
+  min-width: 0;
   display: flex;
   align-items: center;
 }
@@ -2586,9 +2610,14 @@ summary:focus {
   }
 
   .sheet-grid-toolbar-actions,
-  .sheet-grid-toolbar-summary {
+  .sheet-grid-toolbar-summary,
+  .sheet-grid-toolbar-message {
     width: 100%;
     justify-content: flex-start;
+  }
+
+  .sheet-feedback-chip {
+    max-width: 100%;
   }
 
   .sheet-search-field {

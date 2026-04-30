@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+from collections.abc import Callable
 from datetime import date
 from pathlib import Path
 from typing import Literal
@@ -29,6 +31,7 @@ from papertorepo.api.schemas import (
     DashboardStats,
     ExportRead,
     HealthRead,
+    SqlColumnSource,
     JobLaunchRead,
     JobQueueSummaryRead,
     JobRead,
@@ -36,6 +39,8 @@ from papertorepo.api.schemas import (
     PaperSummaryRead,
     RepoRead,
     ScopePayload,
+    SqlRequest,
+    SqlResponse,
 )
 from papertorepo.core.scope import build_scope_json
 from papertorepo.services.pipeline import (
@@ -45,6 +50,8 @@ from papertorepo.services.pipeline import (
     scoped_papers,
     scoped_repos,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _scope_from_query(
@@ -169,6 +176,244 @@ def _scope_json_from_query(
         )
     except (ValueError, ValidationError) as exc:
         raise _scope_http_exception(exc) from exc
+
+
+def _serialize_sql_value(value: object) -> object:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
+def _serialize_sql_row(row: dict[str, object]) -> dict[str, object]:
+    return {key: _serialize_sql_value(value) for key, value in row.items()}
+
+
+def _empty_sql_column_source() -> dict[str, str | None]:
+    return {
+        "source_schema": None,
+        "source_table": None,
+        "source_column": None,
+    }
+
+
+def _sql_column_names(description: object) -> list[str]:
+    if description is None:
+        return []
+    columns: list[str] = []
+    used: set[str] = set()
+    counts: dict[str, int] = {}
+    for column in description:
+        name = getattr(column, "name", None)
+        if name is None:
+            name = column[0]
+        base_name = str(name or "column")
+        counts[base_name] = counts.get(base_name, 0) + 1
+        column_name = base_name if counts[base_name] == 1 else f"{base_name}_{counts[base_name]}"
+        while column_name in used:
+            counts[base_name] += 1
+            column_name = f"{base_name}_{counts[base_name]}"
+        used.add(column_name)
+        columns.append(column_name)
+    return columns
+
+
+def _sql_column_sources_from_pgresult(
+    pgresult: object | None,
+    column_count: int,
+    lookup: Callable[[set[tuple[int, int]]], dict[tuple[int, int], dict[str, str | None]]],
+) -> list[dict[str, str | None]]:
+    return _sql_column_sources_from_refs(_sql_column_source_refs_from_pgresult(pgresult, column_count), lookup)
+
+
+def _sql_column_source_refs_from_pgresult(
+    pgresult: object | None,
+    column_count: int,
+) -> list[tuple[int, int] | None]:
+    if pgresult is None:
+        return [None for _ in range(column_count)]
+
+    ftable = getattr(pgresult, "ftable", None)
+    ftablecol = getattr(pgresult, "ftablecol", None)
+    if ftable is None or ftablecol is None:
+        return [None for _ in range(column_count)]
+
+    refs: list[tuple[int, int] | None] = []
+    for index in range(column_count):
+        table_oid = int(ftable(index) or 0)
+        column_number = int(ftablecol(index) or 0)
+        if table_oid <= 0 or column_number <= 0:
+            refs.append(None)
+            continue
+        key = (table_oid, column_number)
+        refs.append(key)
+    return refs
+
+
+def _sql_column_sources_from_refs(
+    refs: list[tuple[int, int] | None],
+    lookup: Callable[[set[tuple[int, int]]], dict[tuple[int, int], dict[str, str | None]]],
+) -> list[dict[str, str | None]]:
+    source_keys = {ref for ref in refs if ref is not None}
+    sources_by_key = lookup(source_keys)
+    return [sources_by_key.get(ref, _empty_sql_column_source()) if ref else _empty_sql_column_source() for ref in refs]
+
+
+def _lookup_pg_column_sources(
+    raw_connection: object,
+    source_keys: set[tuple[int, int]],
+) -> dict[tuple[int, int], dict[str, str | None]]:
+    if not source_keys:
+        return {}
+
+    values_sql = ", ".join(["(%s, %s)"] * len(source_keys))
+    params: list[int] = []
+    for table_oid, column_number in sorted(source_keys):
+        params.extend([table_oid, column_number])
+
+    cursor = raw_connection.cursor()
+    try:
+        cursor.execute(
+            f"""
+            WITH source(field_table_oid, field_attnum) AS (
+              VALUES {values_sql}
+            )
+            SELECT
+              source.field_table_oid,
+              source.field_attnum,
+              namespace.nspname,
+              class.relname,
+              attribute.attname
+            FROM source
+            JOIN pg_catalog.pg_class AS class
+              ON class.oid = source.field_table_oid::oid
+            JOIN pg_catalog.pg_namespace AS namespace
+              ON namespace.oid = class.relnamespace
+            JOIN pg_catalog.pg_attribute AS attribute
+              ON attribute.attrelid = class.oid
+             AND attribute.attnum = source.field_attnum::int2
+            """,
+            params,
+        )
+        return {
+            (int(row[0]), int(row[1])): {
+                "source_schema": str(row[2]),
+                "source_table": str(row[3]),
+                "source_column": str(row[4]),
+            }
+            for row in cursor.fetchall()
+        }
+    finally:
+        cursor.close()
+
+
+def _sql_column_source_refs(cursor: object, column_count: int) -> list[tuple[int, int] | None]:
+    pgresult = getattr(cursor, "pgresult", None)
+    return _sql_column_source_refs_from_pgresult(pgresult, column_count)
+
+
+def _sql_column_sources(
+    refs: list[tuple[int, int] | None],
+    raw_connection: object | None,
+) -> list[dict[str, str | None]]:
+    if raw_connection is None:
+        return [_empty_sql_column_source() for _ in refs]
+    try:
+        return _sql_column_sources_from_refs(
+            refs,
+            lambda keys: _lookup_pg_column_sources(raw_connection, keys),
+        )
+    except Exception as exc:
+        logger.warning("SQL column provenance lookup failed: %s", exc)
+        return [_empty_sql_column_source() for _ in refs]
+
+
+def _sql_status_message(cursor: object) -> str | None:
+    status = getattr(cursor, "statusmessage", None)
+    if status:
+        return str(status)
+    rowcount = getattr(cursor, "rowcount", -1)
+    if isinstance(rowcount, int) and rowcount >= 0:
+        return f"{rowcount} row(s) affected"
+    return None
+
+
+def _sql_response_from_cursor(cursor: object, raw_connection: object | None = None) -> SqlResponse:
+    has_result_set = False
+    columns: list[str] = []
+    column_source_refs: list[tuple[int, int] | None] = []
+    rows: list[dict[str, object]] = []
+    message = _sql_status_message(cursor)
+
+    while True:
+        description = getattr(cursor, "description", None)
+        if description is not None:
+            has_result_set = True
+            columns = _sql_column_names(description)
+            rows = [_serialize_sql_row(dict(zip(columns, row))) for row in cursor.fetchall()]
+            column_source_refs = _sql_column_source_refs(cursor, len(columns))
+            message = None
+        else:
+            has_result_set = False
+            columns = []
+            column_source_refs = []
+            rows = []
+            message = _sql_status_message(cursor)
+
+        nextset = getattr(cursor, "nextset", None)
+        if nextset is None or not nextset():
+            break
+
+    column_sources = _sql_column_sources(column_source_refs, raw_connection) if has_result_set else []
+    return SqlResponse(
+        ok=True,
+        has_result_set=has_result_set,
+        columns=columns,
+        column_sources=[SqlColumnSource(**source) for source in column_sources],
+        rows=rows,
+        row_count=len(rows) if has_result_set else 0,
+        message=message,
+    )
+
+
+def _driver_connection_from_session(db: Session) -> object:
+    proxied_connection = db.connection().connection
+    return getattr(
+        proxied_connection,
+        "driver_connection",
+        getattr(proxied_connection, "dbapi_connection", proxied_connection),
+    )
+
+
+def _execute_driver_sql(db: Session, query: str) -> SqlResponse:
+    raw_connection = _driver_connection_from_session(db)
+    cursor = raw_connection.cursor()
+    try:
+        if db.bind is not None and db.bind.dialect.name == "postgresql":
+            cursor.execute(query, prepare=False)
+        else:
+            cursor.execute(query)
+        response = _sql_response_from_cursor(cursor, raw_connection)
+        db.commit()
+        if response.has_result_set:
+            logger.info("SQL query returned %d rows, %d columns", response.row_count, len(response.columns))
+        else:
+            logger.info("SQL statement executed: %s", response.message or "no result set")
+        return response
+    except Exception as exc:
+        db.rollback()
+        error_message = str(exc)
+        logger.warning("SQL execution failed: %s", error_message)
+        return SqlResponse(
+            ok=False,
+            has_result_set=False,
+            columns=[],
+            column_sources=[],
+            rows=[],
+            row_count=0,
+            message=error_message,
+        )
+    finally:
+        cursor.close()
 
 
 def register_routes(app: FastAPI) -> None:
@@ -401,5 +646,20 @@ def register_routes(app: FastAPI) -> None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    @router.post("/sql", response_model=SqlResponse)
+    def execute_sql(request: SqlRequest, db: Session = Depends(get_db)) -> SqlResponse:
+        query = request.query.strip()
+        if not query:
+            return SqlResponse(
+                ok=False,
+                has_result_set=False,
+                columns=[],
+                column_sources=[],
+                rows=[],
+                row_count=0,
+                message="Empty query",
+            )
+        return _execute_driver_sql(db, query)
 
     app.include_router(router)

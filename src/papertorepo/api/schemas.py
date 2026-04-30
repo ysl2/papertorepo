@@ -285,3 +285,23 @@ class ExportRead(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class SqlRequest(BaseModel):
+    query: str
+
+
+class SqlColumnSource(BaseModel):
+    source_schema: str | None
+    source_table: str | None
+    source_column: str | None
+
+
+class SqlResponse(BaseModel):
+    ok: bool
+    has_result_set: bool
+    columns: list[str]
+    column_sources: list[SqlColumnSource]
+    rows: list[dict[str, Any]]
+    row_count: int
+    message: str | None

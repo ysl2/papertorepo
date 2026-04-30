@@ -1,7 +1,6 @@
 import {
   startTransition,
   useCallback,
-  useDeferredValue,
   useEffect,
   useMemo,
   useRef,
@@ -188,6 +187,33 @@ type ExportRow = {
   created_at: string
 }
 
+type SqlColumnSource = {
+  source_schema: string | null
+  source_table: string | null
+  source_column: string | null
+}
+
+type SqlResponse = {
+  ok: boolean
+  has_result_set: boolean
+  columns: string[]
+  column_sources: SqlColumnSource[]
+  rows: Record<string, unknown>[]
+  row_count: number
+  message: string | null
+}
+
+type SqlResult = {
+  columns: string[]
+  columnSources: SqlColumnSource[]
+  rows: Record<string, unknown>[]
+  rowCount: number
+}
+
+type SearchMode = 'idle' | 'quick' | 'sql'
+type DetailKind = 'paper' | 'job' | 'export'
+type SqlEntityTarget = { kind: DetailKind; id: string }
+
 type ScopeState = {
   categories: string
   timeMode: TimeMode
@@ -277,6 +303,10 @@ const ARXIV_CATEGORY_PATTERN = /^[a-z]+(?:-[a-z]+)*(?:\.[A-Za-z-]+)?$/
 const CATEGORIES_HINT = 'cs.CV, cs.LG'
 const RANGE_ORDER_HINT = 'From ≤ To'
 const COPY_FEEDBACK_MS = 500
+const SQL_FEEDBACK_MS = 3000
+const SQL_SEARCH_PLACEHOLDER = 'Search or enter SQL...'
+const SQL_ROW_INDEX_KEY = '__row_idx__'
+const SQL_RESULT_PERSISTENCE_ID = 'papertorepo-sql-result'
 
 function toDateInputValue(value: Date) {
   const year = value.getFullYear()
@@ -297,6 +327,25 @@ function addDays(value: Date, delta: number) {
 
 function hasTypedValue(value: string | null | undefined) {
   return typeof value === 'string' && value.trim().length > 0
+}
+
+function rowStringValue(row: Record<string, unknown>, key: string) {
+  const value = row[key]
+  if (value === null || value === undefined) return null
+  const normalized = String(value).trim()
+  return normalized.length > 0 ? normalized : null
+}
+
+function emptySqlColumnSource(): SqlColumnSource {
+  return {
+    source_schema: null,
+    source_table: null,
+    source_column: null,
+  }
+}
+
+function normalizeSqlColumnSources(columns: string[], sources: SqlColumnSource[]) {
+  return columns.map((_, index) => sources[index] ?? emptySqlColumnSource())
 }
 
 async function copyText(value: string) {
@@ -1566,7 +1615,12 @@ function App() {
   const [exportOutputName, setExportOutputName] = useState('')
   const [exportMode, setExportMode] = useState<ExportMode>('all_papers')
   const [previewTab, setPreviewTab] = useState<PreviewTab>('papers')
-  const [tableSearch, setTableSearch] = useState('')
+  const [tableSearchInput, setTableSearchInput] = useState('')
+  const [tableSearchCommitted, setTableSearchCommitted] = useState('')
+  const [tableSearchRunId, setTableSearchRunId] = useState(0)
+  const [searchMode, setSearchMode] = useState<SearchMode>('idle')
+  const [sqlResult, setSqlResult] = useState<SqlResult | null>(null)
+  const [sqlFeedbackMessage, setSqlFeedbackMessage] = useState<string | null>(null)
   const [selectedPaperId, setSelectedPaperId] = useState<string | null>(null)
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null)
   const [selectedExportId, setSelectedExportId] = useState<string | null>(null)
@@ -1604,6 +1658,7 @@ function App() {
   const historyAbortControllersRef = useRef<Map<string, AbortController>>(new Map())
   const queueHandoffTimeoutRef = useRef<number | null>(null)
   const copyFeedbackTimeoutRef = useRef<number | null>(null)
+  const sqlFeedbackTimeoutRef = useRef<number | null>(null)
   const selectedJobDetailHydratedJobIdRef = useRef<string | null>(null)
   const selectedJobChildrenHydratedJobIdRef = useRef<string | null>(null)
   const selectedJobAttemptsHydratedJobIdRef = useRef<string | null>(null)
@@ -1611,7 +1666,6 @@ function App() {
 
   const exportBaseName = normalizeExportBaseName(exportOutputName).trim()
   const exportNameValid = exportBaseName.length > 0
-  const deferredTableSearch = useDeferredValue(tableSearch)
   const categoriesFieldError = useMemo(() => categoriesValidationMessage(scope.categories), [scope.categories])
   const categoriesFieldInvalid = useMemo(
     () => categoriesFieldError !== null && (hasTypedValue(scope.categories) || health !== null),
@@ -1652,7 +1706,8 @@ function App() {
     : 'GitHub API settings loading'
 
   const liveScope = useMemo(() => resolveScope(scope), [scope])
-  const filteredPaperIds = previewTab === 'papers' ? visibleKeys : []
+  const sqlModeActive = searchMode === 'sql' && sqlResult !== null
+  const filteredPaperIds = previewTab === 'papers' && !sqlModeActive ? visibleKeys : []
   const filteredPaperExportReady = previewTab === 'papers' && filteredPaperIds.length > 0
 
   const showCopyFeedback = useCallback((message: string) => {
@@ -1664,6 +1719,32 @@ function App() {
       setCopyFeedback(null)
       copyFeedbackTimeoutRef.current = null
     }, COPY_FEEDBACK_MS)
+  }, [])
+
+  const clearSqlFeedback = useCallback(() => {
+    if (sqlFeedbackTimeoutRef.current !== null) {
+      window.clearTimeout(sqlFeedbackTimeoutRef.current)
+      sqlFeedbackTimeoutRef.current = null
+    }
+    setSqlFeedbackMessage(null)
+  }, [])
+
+  const showSqlFeedback = useCallback((message: string) => {
+    if (sqlFeedbackTimeoutRef.current !== null) {
+      window.clearTimeout(sqlFeedbackTimeoutRef.current)
+    }
+    setSqlFeedbackMessage(message)
+    sqlFeedbackTimeoutRef.current = window.setTimeout(() => {
+      setSqlFeedbackMessage(null)
+      sqlFeedbackTimeoutRef.current = null
+    }, SQL_FEEDBACK_MS)
+  }, [])
+
+  const ignoreSelectedKeyChange = useCallback((key: string | null) => {
+    void key
+  }, [])
+  const ignoreDisplayedKeysChange = useCallback((keys: string[]) => {
+    void keys
   }, [])
 
   const handleCopyText = useCallback(
@@ -1705,8 +1786,74 @@ function App() {
       if (copyFeedbackTimeoutRef.current !== null) {
         window.clearTimeout(copyFeedbackTimeoutRef.current)
       }
+      if (sqlFeedbackTimeoutRef.current !== null) {
+        window.clearTimeout(sqlFeedbackTimeoutRef.current)
+      }
     }
   }, [])
+
+  useEffect(() => {
+    const query = tableSearchCommitted.trim()
+    if (!query) return
+
+    const controller = new AbortController()
+
+    async function executeSql() {
+      try {
+        const response = await fetchJson<SqlResponse>('/api/v1/sql', {
+          method: 'POST',
+          body: JSON.stringify({ query }),
+          signal: controller.signal,
+        })
+        if (controller.signal.aborted) return
+
+        if (response.ok && response.has_result_set) {
+          setSqlResult({
+            columns: response.columns,
+            columnSources: normalizeSqlColumnSources(response.columns, response.column_sources ?? []),
+            rows: response.rows,
+            rowCount: response.row_count,
+          })
+          setSearchMode('sql')
+          setVisibleKeys([])
+          selectedJobIdRef.current = null
+          setSelectedPaperId(null)
+          setSelectedJobId(null)
+          setSelectedExportId(null)
+          setSelectedJobDetail(null)
+          setSelectedJobChildren([])
+          setSelectedJobAttempts([])
+          return
+        }
+
+        setSqlResult(null)
+        if (response.ok) {
+          setSearchMode('idle')
+          if (response.message) {
+            showSqlFeedback(response.message)
+          }
+          setSummaryRefreshTick((value) => value + 1)
+          setJobsRefreshTick((value) => value + 1)
+          setTableRefreshTick((value) => value + 1)
+          return
+        }
+
+        setSearchMode('quick')
+      } catch (err) {
+        if (!isAbortError(err) && err instanceof Error) {
+          setSearchMode('quick')
+          setSqlResult(null)
+          setError(`SQL: ${err.message}`)
+        }
+      }
+    }
+
+    void executeSql()
+
+    return () => {
+      controller.abort()
+    }
+  }, [showSqlFeedback, tableSearchCommitted, tableSearchRunId])
 
   useEffect(() => {
     let cancelled = false
@@ -2854,6 +3001,39 @@ function App() {
     [],
   )
 
+  const activeQuickSearch = searchMode === 'quick' ? tableSearchCommitted : ''
+  const sqlRowKey = useMemo(() => {
+    const columnNames = new Set(sqlResult?.columns ?? [])
+    let key = SQL_ROW_INDEX_KEY
+    while (columnNames.has(key)) {
+      key = `_${key}`
+    }
+    return key
+  }, [sqlResult])
+  const sqlRows = useMemo(
+    () =>
+      sqlResult
+        ? sqlResult.rows.map((row, index) => ({
+            ...row,
+            [sqlRowKey]: index,
+          }))
+        : [],
+    [sqlResult, sqlRowKey],
+  )
+  const sqlColumns = useMemo<SheetColumn<Record<string, unknown>>[]>(
+    () =>
+      sqlResult
+        ? sqlResult.columns.map((column) => ({
+            colId: column,
+            field: column,
+            headerName: column,
+            width: columnWidth(column || 'Column', 180),
+            valueGetter: (params) => params.data?.[column],
+          }))
+        : [],
+    [sqlResult],
+  )
+
   const jobHistoryList = useMemo(() => Object.values(jobAttemptHistories).flat(), [jobAttemptHistories])
   const jobsById = useMemo(() => {
     const result = new Map<string, Job>()
@@ -2869,6 +3049,13 @@ function App() {
   const selectedJobSummary = (selectedJobId ? jobsById.get(selectedJobId) : null) || null
   const selectedJob = selectedJobDetail?.id === selectedJobId ? selectedJobDetail : selectedJobSummary
   const selectedExport = exportsData.find((row) => row.id === selectedExportId) || null
+  const selectedDetailKind: DetailKind | null = selectedPaperId
+    ? 'paper'
+    : selectedJobId
+      ? 'job'
+      : selectedExportId
+        ? 'export'
+        : null
   const selectedJobParent = selectedJob?.parent_job_id ? rootJobById.get(selectedJob.parent_job_id) : null
   const selectedJobCanRerun = selectedJob ? canRerunJobInContext(selectedJob, selectedJobParent) : false
   const selectedJobCanStop = selectedJob ? canStopJob(selectedJob) : false
@@ -2880,17 +3067,17 @@ function App() {
   )
 
   useEffect(() => {
-    if (previewTab !== 'jobs' || !selectedJobId) return
+    if (!selectedJobId) return
     const timer = window.setInterval(() => setSelectedJobRefreshTick((value) => value + 1), ACTIVE_JOBS_POLL_MS)
     return () => window.clearInterval(timer)
-  }, [previewTab, selectedJobId])
+  }, [selectedJobId])
 
   useEffect(() => {
     let cancelled = false
     const controller = new AbortController()
 
     async function loadSelectedJobDetail() {
-      if (previewTab !== 'jobs' || !selectedJobId) {
+      if (!selectedJobId) {
         selectedJobDetailHydratedJobIdRef.current = null
         setSelectedJobDetail(null)
         setSelectedJobDetailLoading(false)
@@ -2924,14 +3111,14 @@ function App() {
       cancelled = true
       controller.abort()
     }
-  }, [previewTab, selectedJobId, selectedJobRefreshTick])
+  }, [selectedJobId, selectedJobRefreshTick])
 
   useEffect(() => {
     let cancelled = false
     const controller = new AbortController()
 
     async function loadSelectedPaperDetail() {
-      if (previewTab !== 'papers' || !selectedPaperId) {
+      if (!selectedPaperId) {
         setSelectedPaperLoading(false)
         return
       }
@@ -2958,14 +3145,14 @@ function App() {
       cancelled = true
       controller.abort()
     }
-  }, [previewTab, selectedPaperId, tableRefreshTick])
+  }, [selectedPaperId, tableRefreshTick])
 
   useEffect(() => {
     let cancelled = false
     const controller = new AbortController()
 
     async function loadSelectedJobChildren() {
-      if (previewTab !== 'jobs' || !selectedJob || !isBatchFolderJob(selectedJob)) {
+      if (!selectedJob || !isBatchFolderJob(selectedJob)) {
         selectedJobChildrenHydratedJobIdRef.current = null
         setSelectedJobChildren([])
         setSelectedJobChildrenLoading(false)
@@ -3000,7 +3187,7 @@ function App() {
       cancelled = true
       controller.abort()
     }
-  }, [previewTab, selectedJob?.id, selectedJob?.job_type, selectedJobRefreshTick])
+  }, [selectedJob?.id, selectedJob?.job_type, selectedJobRefreshTick])
 
   const selectedJobLatestAttempt = useMemo(
     () => selectedJobAttempts.find((job) => isLatestAttempt(job)) || selectedJob,
@@ -3012,7 +3199,7 @@ function App() {
     const controller = new AbortController()
 
     async function loadSelectedJobAttempts() {
-      if (previewTab !== 'jobs' || !selectedJob) {
+      if (!selectedJob) {
         selectedJobAttemptsHydratedJobIdRef.current = null
         setSelectedJobAttempts([])
         setSelectedJobAttemptsLoading(false)
@@ -3054,7 +3241,7 @@ function App() {
       cancelled = true
       controller.abort()
     }
-  }, [previewTab, selectedJob?.attempt_count, selectedJob?.id, selectedJobRefreshTick])
+  }, [selectedJob?.attempt_count, selectedJob?.id, selectedJobRefreshTick])
 
   function closeDrawer() {
     clearRerunSelectionHandoff()
@@ -3083,6 +3270,79 @@ function App() {
     setSelectedJobId(jobId)
   }
 
+  function clearSqlSelection() {
+    closeDrawer()
+  }
+
+  function sqlEntityTargetFromRow(row: Record<string, unknown>): SqlEntityTarget | null {
+    if (!sqlResult) return null
+
+    for (let index = 0; index < sqlResult.columns.length; index += 1) {
+      const source = sqlResult.columnSources[index]
+      if (!source) continue
+
+      const value = rowStringValue(row, sqlResult.columns[index])
+      if (!value) continue
+
+      if (source.source_table === 'papers' && source.source_column === 'arxiv_id') {
+        return { kind: 'paper', id: value }
+      }
+      if (source.source_table === 'jobs' && source.source_column === 'id') {
+        return { kind: 'job', id: value }
+      }
+      if (source.source_table === 'exports' && source.source_column === 'id') {
+        return { kind: 'export', id: value }
+      }
+    }
+
+    return null
+  }
+
+  function sqlEntityTargetIsSelected(target: SqlEntityTarget) {
+    if (target.kind === 'paper') return selectedPaperId === target.id
+    if (target.kind === 'job') return selectedJobId === target.id
+    return selectedExportId === target.id
+  }
+
+  function handleSqlRowOpen(row: Record<string, unknown>) {
+    const target = sqlEntityTargetFromRow(row)
+    if (!target || sqlEntityTargetIsSelected(target)) {
+      clearSqlSelection()
+      return
+    }
+
+    clearSqlSelection()
+    if (target.kind === 'paper') {
+      setSelectedPaperId(target.id)
+      return
+    }
+    if (target.kind === 'job') {
+      selectJob(target.id)
+      return
+    }
+    setSelectedExportId(target.id)
+  }
+
+  function commitTableSearch() {
+    clearSqlFeedback()
+    setTableSearchCommitted(tableSearchInput)
+    setTableSearchRunId((value) => value + 1)
+    if (!tableSearchInput.trim()) {
+      setSearchMode('idle')
+      setSqlResult(null)
+      setVisibleKeys([])
+    }
+  }
+
+  function clearTableSearchState() {
+    setTableSearchInput('')
+    setTableSearchCommitted('')
+    setSearchMode('idle')
+    setSqlResult(null)
+    setVisibleKeys([])
+    clearSqlFeedback()
+  }
+
   function handlePreviewTabChange(nextTab: PreviewTab) {
     if (nextTab === previewTab) {
       return
@@ -3091,7 +3351,7 @@ function App() {
       cancelAllJobTreeLoads()
     }
     setPreviewTab(nextTab)
-    setTableSearch('')
+    clearTableSearchState()
     setVisibleKeys([])
     clearRerunSelectionHandoff()
     selectedJobDetailHydratedJobIdRef.current = null
@@ -3139,9 +3399,9 @@ function App() {
   }
 
   function renderDrawerContent() {
-    if (previewTab === 'papers') {
+    if (selectedDetailKind === 'paper') {
       if (!selectedPaper) {
-        return <EmptyState title="No paper selected" detail="Select a paper to inspect its link state and repository context." />
+        return <EmptyState title="Loading paper details" detail="The selected paper detail is still being loaded." />
       }
 
       const repo = selectedPaper.primary_github_url ? repoByUrl[selectedPaper.primary_github_url] : undefined
@@ -3259,9 +3519,9 @@ function App() {
       )
     }
 
-    if (previewTab === 'jobs') {
+    if (selectedDetailKind === 'job') {
       if (!selectedJob) {
-        return <EmptyState title="No job selected" detail="Select a job to inspect its payload, status and error summary." />
+        return <EmptyState title="Loading job details" detail="The selected job detail is still being loaded." />
       }
 
       const selectedJobIsBatchFolder = isBatchFolderJob(selectedJob)
@@ -3438,50 +3698,50 @@ function App() {
       )
     }
 
-    if (!selectedExport) {
-      return <EmptyState title="No export selected" detail="Select an export row to inspect and download it." />
+    if (selectedDetailKind === 'export') {
+      if (!selectedExport) {
+        return <EmptyState title="Loading export details" detail="The selected export detail is still being loaded." />
+      }
+
+      return (
+        <div className="drawer-content">
+          <div className="drawer-header">
+            <div>
+              <p className="panel-kicker">Export details</p>
+              <h3>{selectedExport.file_name}</h3>
+            </div>
+            <button type="button" className="ghost-button" onClick={closeDrawer}>
+              Close
+            </button>
+          </div>
+
+          <div className="drawer-tags">
+            <span className="meta-chip">{formatTime(selectedExport.created_at)}</span>
+          </div>
+
+          <DetailBlock label="Export id" value={<span className="mono-cell">{selectedExport.id}</span>} />
+          <DetailBlock label="Scope" value={scopeJsonLabel(selectedExport.scope_json)} />
+          <DetailBlock label="Created at" value={formatTime(selectedExport.created_at)} />
+          <DetailBlock
+            label="Download"
+            value={
+              <a className="download-link" href={`/api/v1/exports/${selectedExport.id}/download`}>
+                download CSV
+              </a>
+            }
+          />
+        </div>
+      )
     }
 
-    return (
-      <div className="drawer-content">
-        <div className="drawer-header">
-          <div>
-            <p className="panel-kicker">Export details</p>
-            <h3>{selectedExport.file_name}</h3>
-          </div>
-          <button type="button" className="ghost-button" onClick={closeDrawer}>
-            Close
-          </button>
-        </div>
-
-        <div className="drawer-tags">
-          <span className="meta-chip">{formatTime(selectedExport.created_at)}</span>
-        </div>
-
-        <DetailBlock label="Export id" value={<span className="mono-cell">{selectedExport.id}</span>} />
-        <DetailBlock label="Scope" value={scopeJsonLabel(selectedExport.scope_json)} />
-        <DetailBlock label="Created at" value={formatTime(selectedExport.created_at)} />
-        <DetailBlock
-          label="Download"
-          value={
-            <a className="download-link" href={`/api/v1/exports/${selectedExport.id}/download`}>
-              download CSV
-            </a>
-          }
-        />
-      </div>
-    )
+    return <EmptyState title="No row selected" detail="Select a row with supported provenance to inspect its details." />
   }
 
   const activeLoadedRows = previewTab === 'papers' ? papers.length : previewTab === 'jobs' ? jobRows.length : exportsData.length
   const activeTotalRows = previewTab === 'papers' ? paperTotalRows : activeLoadedRows
-  const tableSummaryLabel = `${visibleKeys.length.toLocaleString()} / ${activeTotalRows.toLocaleString()} rows`
-  const quickSearchPlaceholder =
-    previewTab === 'papers'
-      ? 'Search title, abstract, authors, repo...'
-      : previewTab === 'jobs'
-        ? 'Search job id, scope, summary...'
-        : 'Search export name or scope...'
+  const tableSummaryLabel = sqlModeActive
+    ? `SQL · ${sqlResult.rowCount.toLocaleString()} rows`
+    : `${visibleKeys.length.toLocaleString()} / ${activeTotalRows.toLocaleString()} rows`
 
   const sheetToolbarLeading = (
     <div className="tab-strip">
@@ -3501,10 +3761,15 @@ function App() {
     <label className="sheet-search-field">
       <input
         className="floating-placeholder-input"
-        value={tableSearch}
-        onChange={(event) => setTableSearch(event.target.value)}
-        placeholder={quickSearchPlaceholder}
-        aria-label="Quick search"
+        value={tableSearchInput}
+        onChange={(event) => setTableSearchInput(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key !== 'Enter') return
+          event.preventDefault()
+          commitTableSearch()
+        }}
+        placeholder={SQL_SEARCH_PLACEHOLDER}
+        aria-label="Search or SQL"
       />
     </label>
   )
@@ -3514,6 +3779,8 @@ function App() {
       {tableSummaryLabel}
     </span>
   )
+
+  const sheetToolbarMessage = sqlFeedbackMessage ? <span className="sheet-feedback-chip">{sqlFeedbackMessage}</span> : null
 
   const sheetToolbarActions = (
     <button
@@ -3602,22 +3869,25 @@ function App() {
   const activeGrid =
     previewTab === 'papers' ? (
       <AgGridSheet
-        key="papers"
-        columns={paperColumns}
-        rows={paperRows}
-        rowKey="id"
-        selectedKey={selectedPaperId}
-        onSelectedKeyChange={setSelectedPaperId}
-        onDisplayedKeysChange={handleDisplayedKeysChange}
-        quickSearch={deferredTableSearch}
-        persistenceId="papertorepo-papers-v8"
-        emptyMessage="No papers are stored yet."
+        key={sqlModeActive ? 'papers-sql' : 'papers'}
+        columns={sqlModeActive ? sqlColumns : paperColumns}
+        rows={sqlModeActive ? sqlRows : paperRows}
+        rowKey={sqlModeActive ? sqlRowKey : 'id'}
+        selectedKey={sqlModeActive ? null : selectedPaperId}
+        onSelectedKeyChange={sqlModeActive ? ignoreSelectedKeyChange : setSelectedPaperId}
+        onDisplayedKeysChange={sqlModeActive ? ignoreDisplayedKeysChange : handleDisplayedKeysChange}
+        onRowOpen={sqlModeActive ? handleSqlRowOpen : undefined}
+        quickSearch={activeQuickSearch}
+        persistenceId={sqlModeActive ? SQL_RESULT_PERSISTENCE_ID : 'papertorepo-papers-v8'}
+        emptyMessage={sqlModeActive ? 'No SQL rows returned.' : 'No papers are stored yet.'}
         toolbarLeading={sheetToolbarLeading}
         toolbarActions={sheetToolbarActions}
         toolbarSearch={sheetToolbarSearch}
         toolbarSummary={sheetToolbarSummary}
+        toolbarMessage={sheetToolbarMessage}
         toolbarAfterSummary={sheetToolbarExport}
-        loading={papersLoading}
+        onReset={clearTableSearchState}
+        loading={sqlModeActive ? false : papersLoading}
         loadingLabel={papers.length > 0 ? 'Refreshing papers…' : 'Loading papers…'}
         loadingSummaryMode="labelOnly"
         progressCurrent={papersLoadedCount}
@@ -3625,21 +3895,25 @@ function App() {
       />
     ) : previewTab === 'jobs' ? (
       <AgGridSheet
-        key="jobs"
-        columns={jobColumns}
-        rows={jobRows}
-        rowKey="id"
-        selectedKey={selectedJobId}
-        onSelectedKeyChange={selectJob}
-        onDisplayedKeysChange={handleDisplayedKeysChange}
-        quickSearch={deferredTableSearch}
-        persistenceId="papertorepo-jobs"
-        emptyMessage="No jobs yet."
+        key={sqlModeActive ? 'jobs-sql' : 'jobs'}
+        columns={sqlModeActive ? sqlColumns : jobColumns}
+        rows={sqlModeActive ? sqlRows : jobRows}
+        rowKey={sqlModeActive ? sqlRowKey : 'id'}
+        selectedKey={sqlModeActive ? null : selectedJobId}
+        onSelectedKeyChange={sqlModeActive ? ignoreSelectedKeyChange : selectJob}
+        onDisplayedKeysChange={sqlModeActive ? ignoreDisplayedKeysChange : handleDisplayedKeysChange}
+        onRowOpen={sqlModeActive ? handleSqlRowOpen : undefined}
+        quickSearch={activeQuickSearch}
+        persistenceId={sqlModeActive ? SQL_RESULT_PERSISTENCE_ID : 'papertorepo-jobs'}
+        emptyMessage={sqlModeActive ? 'No SQL rows returned.' : 'No jobs yet.'}
         toolbarLeading={sheetToolbarLeading}
         toolbarActions={sheetToolbarActions}
         toolbarSearch={sheetToolbarSearch}
         toolbarSummary={sheetToolbarSummary}
+        toolbarMessage={sheetToolbarMessage}
+        onReset={clearTableSearchState}
         getRowClass={(row) => {
+          if (sqlModeActive) return undefined
           const classes: string[] = []
           if (row.row_kind === 'child') classes.push('sheet-row-child')
           if (row.row_kind === 'history') classes.push('sheet-row-history')
@@ -3649,21 +3923,24 @@ function App() {
       />
     ) : (
       <AgGridSheet
-        key="exports"
-        columns={exportColumns}
-        rows={exportRows}
-        rowKey="id"
-        selectedKey={selectedExportId}
-        onSelectedKeyChange={setSelectedExportId}
-        onDisplayedKeysChange={handleDisplayedKeysChange}
-        quickSearch={deferredTableSearch}
-        persistenceId="papertorepo-exports"
-        emptyMessage="No exports yet."
+        key={sqlModeActive ? 'exports-sql' : 'exports'}
+        columns={sqlModeActive ? sqlColumns : exportColumns}
+        rows={sqlModeActive ? sqlRows : exportRows}
+        rowKey={sqlModeActive ? sqlRowKey : 'id'}
+        selectedKey={sqlModeActive ? null : selectedExportId}
+        onSelectedKeyChange={sqlModeActive ? ignoreSelectedKeyChange : setSelectedExportId}
+        onDisplayedKeysChange={sqlModeActive ? ignoreDisplayedKeysChange : handleDisplayedKeysChange}
+        onRowOpen={sqlModeActive ? handleSqlRowOpen : undefined}
+        quickSearch={activeQuickSearch}
+        persistenceId={sqlModeActive ? SQL_RESULT_PERSISTENCE_ID : 'papertorepo-exports'}
+        emptyMessage={sqlModeActive ? 'No SQL rows returned.' : 'No exports yet.'}
         toolbarLeading={sheetToolbarLeading}
         toolbarActions={sheetToolbarActions}
         toolbarSearch={sheetToolbarSearch}
         toolbarSummary={sheetToolbarSummary}
-        loading={exportsLoading}
+        toolbarMessage={sheetToolbarMessage}
+        onReset={clearTableSearchState}
+        loading={sqlModeActive ? false : exportsLoading}
         loadingLabel={exportsData.length > 0 ? 'Refreshing exports…' : 'Loading exports…'}
       />
     )

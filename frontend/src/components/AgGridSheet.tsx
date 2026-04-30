@@ -41,6 +41,7 @@ type AgGridSheetProps<TData extends RowRecord = RowRecord> = {
   selectedKey: string | null
   onSelectedKeyChange: (key: string | null) => void
   onDisplayedKeysChange: (keys: string[]) => void
+  onRowOpen?: (row: TData) => void
   quickSearch: string
   persistenceId: string
   emptyMessage: string
@@ -48,7 +49,9 @@ type AgGridSheetProps<TData extends RowRecord = RowRecord> = {
   toolbarActions?: ReactNode
   toolbarSearch?: ReactNode
   toolbarSummary?: ReactNode
+  toolbarMessage?: ReactNode
   toolbarAfterSummary?: ReactNode
+  onReset?: () => void
   loading?: boolean
   loadingLabel?: string
   progressCurrent?: number
@@ -247,6 +250,7 @@ export default function AgGridSheet<TData extends RowRecord>({
   selectedKey,
   onSelectedKeyChange,
   onDisplayedKeysChange,
+  onRowOpen,
   quickSearch,
   persistenceId,
   emptyMessage,
@@ -254,7 +258,9 @@ export default function AgGridSheet<TData extends RowRecord>({
   toolbarActions,
   toolbarSearch,
   toolbarSummary,
+  toolbarMessage,
   toolbarAfterSummary,
+  onReset,
   loading = false,
   loadingLabel = 'Loading rows…',
   progressCurrent,
@@ -438,6 +444,7 @@ export default function AgGridSheet<TData extends RowRecord>({
     api.setGridOption('quickFilterText', quickSearch.trim())
     syncColumnControls(api)
     syncDisplayedKeys(api)
+    onReset?.()
   }
 
   function handlePopupPostProcess(params: PostProcessPopupParams<TData>) {
@@ -548,6 +555,8 @@ export default function AgGridSheet<TData extends RowRecord>({
 
         {toolbarSummary ? <div className="sheet-grid-toolbar-slot sheet-grid-toolbar-summary">{toolbarSummary}</div> : null}
 
+        {toolbarMessage ? <div className="sheet-grid-toolbar-slot sheet-grid-toolbar-message">{toolbarMessage}</div> : null}
+
         {toolbarAfterSummary ? <div className="sheet-grid-toolbar-slot sheet-grid-toolbar-export-slot">{toolbarAfterSummary}</div> : null}
       </div>
 
@@ -587,6 +596,10 @@ export default function AgGridSheet<TData extends RowRecord>({
           getRowClass={(params: RowClassParams<TData>) => (params.data ? getRowClass?.(params.data) ?? '' : '')}
           onRowClicked={(event: RowClickedEvent<TData>) => {
             if (event.isEventHandlingSuppressed) return
+            if (event.data && onRowOpen) {
+              onRowOpen(event.data)
+              return
+            }
             const value = event.data?.[rowKey]
             if (value == null) return
             const key = String(value)
