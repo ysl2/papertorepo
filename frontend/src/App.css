@@ -2446,6 +2446,30 @@ summary:focus {
   line-height: 1.6;
 }
 
+.drawer-loading-content {
+  min-height: 420px;
+}
+
+.drawer-loading-line {
+  display: block;
+  height: 14px;
+  max-width: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(26, 91, 71, 0.1), rgba(26, 91, 71, 0.18), rgba(26, 91, 71, 0.1));
+  animation: drawer-loading-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes drawer-loading-pulse {
+  0%,
+  100% {
+    opacity: 0.58;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
 .drawer-inline-action,
 .attempt-history-item {
   width: 100%;

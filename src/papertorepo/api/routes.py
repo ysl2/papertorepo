@@ -642,6 +642,13 @@ def register_routes(app: FastAPI) -> None:
     def public_exports(db: Session = Depends(get_db)) -> list[ExportRead]:
         return [ExportRead.model_validate(item) for item in db.scalars(select(ExportRecord).order_by(ExportRecord.created_at.desc())).all()]
 
+    @router.get("/exports/{export_id}", response_model=ExportRead)
+    def public_export(export_id: str, db: Session = Depends(get_db)) -> ExportRead:
+        export_record = db.get(ExportRecord, export_id)
+        if export_record is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Export not found")
+        return ExportRead.model_validate(export_record)
+
     @router.get("/exports/{export_id}/download")
     def download_export(export_id: str, db: Session = Depends(get_db)) -> FileResponse:
         export_record = db.get(ExportRecord, export_id)

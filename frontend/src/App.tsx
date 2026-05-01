@@ -1196,6 +1196,10 @@ function EmptyState({ title, detail }: { title: string; detail: string }) {
   )
 }
 
+function DrawerLoadingLine({ width = '100%' }: { width?: string }) {
+  return <span className="drawer-loading-line" style={{ width }} aria-hidden="true" />
+}
+
 function InputGhostHint({
   text,
   visible,
@@ -1636,6 +1640,7 @@ function App() {
   const [selectedJobChildren, setSelectedJobChildren] = useState<Job[]>([])
   const [selectedJobAttempts, setSelectedJobAttempts] = useState<Job[]>([])
   const [selectedJobDetail, setSelectedJobDetail] = useState<Job | null>(null)
+  const [selectedExportDetail, setSelectedExportDetail] = useState<ExportRow | null>(null)
   const [exportsData, setExportsData] = useState<ExportRow[]>([])
   const initialScopeRef = useRef<ScopeState | null>(null)
   if (initialScopeRef.current === null) {
@@ -1673,6 +1678,7 @@ function App() {
   const [selectedJobDetailLoading, setSelectedJobDetailLoading] = useState(false)
   const [selectedJobChildrenLoading, setSelectedJobChildrenLoading] = useState(false)
   const [selectedJobAttemptsLoading, setSelectedJobAttemptsLoading] = useState(false)
+  const [selectedExportLoading, setSelectedExportLoading] = useState(false)
   const [papersLoading, setPapersLoading] = useState(false)
   const [papersLoadedCount, setPapersLoadedCount] = useState(0)
   const [exportsLoading, setExportsLoading] = useState(false)
@@ -1903,6 +1909,8 @@ function App() {
           setSelectedJobDetail(null)
           setSelectedJobChildren([])
           setSelectedJobAttempts([])
+          setSelectedExportDetail(null)
+          setSelectedExportLoading(false)
           return
         }
 
@@ -3136,7 +3144,8 @@ function App() {
   const selectedPaper = selectedPaperDetail ?? selectedPaperSummary
   const selectedJobSummary = (selectedJobId ? jobsById.get(selectedJobId) : null) || null
   const selectedJob = selectedJobDetail?.id === selectedJobId ? selectedJobDetail : selectedJobSummary
-  const selectedExport = exportsData.find((row) => row.id === selectedExportId) || null
+  const selectedExportSummary = exportsData.find((row) => row.id === selectedExportId) || null
+  const selectedExport = selectedExportDetail?.id === selectedExportId ? selectedExportDetail : selectedExportSummary
   const selectedDetailKind: DetailKind | null = selectedPaperId
     ? 'paper'
     : selectedJobId
@@ -3234,6 +3243,46 @@ function App() {
       controller.abort()
     }
   }, [selectedPaperId, tableRefreshTick])
+
+  useEffect(() => {
+    let cancelled = false
+    const controller = new AbortController()
+
+    async function loadSelectedExportDetail() {
+      if (!selectedExportId) {
+        setSelectedExportDetail(null)
+        setSelectedExportLoading(false)
+        return
+      }
+
+      if (selectedExportDetail?.id === selectedExportId) {
+        setSelectedExportLoading(false)
+        return
+      }
+
+      setSelectedExportLoading(true)
+
+      try {
+        const data = await fetchJson<ExportRow>(`/api/v1/exports/${selectedExportId}`, {
+          signal: controller.signal,
+        })
+        if (cancelled) return
+        setSelectedExportDetail(data)
+        setSelectedExportLoading(false)
+      } catch (err) {
+        if (cancelled || isAbortError(err) || !(err instanceof Error)) return
+        setSelectedExportLoading(false)
+        setError(err.message)
+      }
+    }
+
+    void loadSelectedExportDetail()
+
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
+  }, [selectedExportDetail?.id, selectedExportId])
 
   useEffect(() => {
     let cancelled = false
@@ -3344,6 +3393,8 @@ function App() {
     setSelectedJobDetailLoading(false)
     setSelectedJobChildren([])
     setSelectedJobAttempts([])
+    setSelectedExportDetail(null)
+    setSelectedExportLoading(false)
   }
 
   function selectJob(jobId: string | null) {
@@ -3466,6 +3517,8 @@ function App() {
     setSelectedJobDetailLoading(false)
     setSelectedJobChildren([])
     setSelectedJobAttempts([])
+    setSelectedExportDetail(null)
+    setSelectedExportLoading(false)
     setExpandedParentJobIds([])
     setExpandedJobGroups([])
     setChildJobsByParentId({})
@@ -3499,10 +3552,50 @@ function App() {
     }
   }
 
+  function renderLoadingDrawerContent(kind: DetailKind) {
+    const title = kind === 'paper' ? 'Paper details' : kind === 'job' ? 'Job details' : 'Export details'
+    const id = kind === 'paper' ? selectedPaperId : kind === 'job' ? selectedJobId : selectedExportId
+    const idLabel = kind === 'paper' ? 'ArXiv' : kind === 'job' ? 'Job id' : 'Export id'
+    const detailLabels =
+      kind === 'paper'
+        ? ['Title', 'Abstract', 'Authors', 'Repository']
+        : kind === 'job'
+          ? ['Status', 'Scope', 'Started at', 'Stats']
+          : ['File', 'Scope', 'Created at', 'Download']
+
+    return (
+      <div className="drawer-content drawer-loading-content">
+        <div className="drawer-header">
+          <div>
+            <p className="panel-kicker">{title}</p>
+            <h3>{id ? <span className="mono-cell">{id}</span> : 'Loading details'}</h3>
+          </div>
+          <button type="button" className="ghost-button" onClick={closeDrawer}>
+            Close
+          </button>
+        </div>
+
+        <div className="drawer-tags">
+          <span className="meta-chip">Loading…</span>
+          <span className="meta-chip">{kind}</span>
+        </div>
+
+        <DetailBlock label={idLabel} value={id ? <span className="mono-cell">{id}</span> : <DrawerLoadingLine width="45%" />} />
+        {detailLabels.map((label, index) => (
+          <DetailBlock
+            key={label}
+            label={label}
+            value={<DrawerLoadingLine width={index === 1 ? '88%' : index === 3 ? '58%' : '72%'} />}
+          />
+        ))}
+      </div>
+    )
+  }
+
   function renderDrawerContent() {
     if (selectedDetailKind === 'paper') {
       if (!selectedPaper) {
-        return <EmptyState title="Loading paper details" detail="The selected paper detail is still being loaded." />
+        return renderLoadingDrawerContent('paper')
       }
 
       const repo = selectedPaper.primary_github_url ? repoByUrl[selectedPaper.primary_github_url] : undefined
@@ -3622,7 +3715,7 @@ function App() {
 
     if (selectedDetailKind === 'job') {
       if (!selectedJob) {
-        return <EmptyState title="Loading job details" detail="The selected job detail is still being loaded." />
+        return renderLoadingDrawerContent('job')
       }
 
       const selectedJobIsBatchFolder = isBatchFolderJob(selectedJob)
@@ -3801,7 +3894,7 @@ function App() {
 
     if (selectedDetailKind === 'export') {
       if (!selectedExport) {
-        return <EmptyState title="Loading export details" detail="The selected export detail is still being loaded." />
+        return renderLoadingDrawerContent('export')
       }
 
       return (
@@ -3818,6 +3911,7 @@ function App() {
 
           <div className="drawer-tags">
             <span className="meta-chip">{formatTime(selectedExport.created_at)}</span>
+            {selectedExportLoading ? <span className="meta-chip">Refreshing…</span> : null}
           </div>
 
           <DetailBlock label="Export id" value={<span className="mono-cell">{selectedExport.id}</span>} />

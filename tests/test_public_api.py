@@ -9,6 +9,7 @@ from papertorepo.api.app import app, create_app
 from papertorepo.core.config import clear_settings_cache
 from papertorepo.db.session import session_scope
 from papertorepo.db.models import (
+    ExportRecord,
     GitHubRepo,
     Job,
     JobAttemptMode,
@@ -410,6 +411,38 @@ def test_public_dashboard_returns_job_queue_summary(db_env):
     assert payload["job_queue_summary"]["current_job"]["job_type"] == "find_repos"
     assert payload["job_queue_summary"]["next_job"]["id"] == queued_job.id
     assert payload["job_queue_summary"]["next_job"]["job_type"] == "refresh_metadata"
+
+
+def test_public_export_detail_returns_export_record(db_env):
+    with session_scope() as db:
+        db.add(
+            ExportRecord(
+                id="export-detail-1",
+                file_name="detail.csv",
+                file_path="/tmp/detail.csv",
+                scope_json={"categories": ["cs.CV"], "export_mode": "all_papers"},
+                created_at=utc_now(),
+            )
+        )
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/exports/export-detail-1")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["id"] == "export-detail-1"
+    assert payload["file_name"] == "detail.csv"
+    assert payload["file_path"] == "/tmp/detail.csv"
+    assert payload["scope_json"] == {"categories": ["cs.CV"], "export_mode": "all_papers"}
+    assert payload["created_at"]
+
+
+def test_public_export_detail_returns_404_for_missing_export(db_env):
+    with TestClient(app) as client:
+        response = client.get("/api/v1/exports/missing-export")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Export not found"
 
 
 @pytest.mark.parametrize(
