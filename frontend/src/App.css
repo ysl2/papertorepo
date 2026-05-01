@@ -2369,6 +2369,7 @@ summary:focus {
   right: 18px;
   z-index: 72;
   width: min(520px, calc(100vw - 36px));
+  height: calc(100vh - 36px);
   max-height: calc(100vh - 36px);
   border: 1px solid var(--line);
   border-radius: 24px;

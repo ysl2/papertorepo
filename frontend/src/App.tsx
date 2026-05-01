@@ -1640,7 +1640,7 @@ function App() {
   const [selectedJobChildren, setSelectedJobChildren] = useState<Job[]>([])
   const [selectedJobAttempts, setSelectedJobAttempts] = useState<Job[]>([])
   const [selectedJobDetail, setSelectedJobDetail] = useState<Job | null>(null)
-  const [selectedExportDetail, setSelectedExportDetail] = useState<ExportRow | null>(null)
+  const [exportDetailsById, setExportDetailsById] = useState<Record<string, ExportRow>>({})
   const [exportsData, setExportsData] = useState<ExportRow[]>([])
   const initialScopeRef = useRef<ScopeState | null>(null)
   if (initialScopeRef.current === null) {
@@ -1909,7 +1909,6 @@ function App() {
           setSelectedJobDetail(null)
           setSelectedJobChildren([])
           setSelectedJobAttempts([])
-          setSelectedExportDetail(null)
           setSelectedExportLoading(false)
           return
         }
@@ -3145,6 +3144,7 @@ function App() {
   const selectedJobSummary = (selectedJobId ? jobsById.get(selectedJobId) : null) || null
   const selectedJob = selectedJobDetail?.id === selectedJobId ? selectedJobDetail : selectedJobSummary
   const selectedExportSummary = exportsData.find((row) => row.id === selectedExportId) || null
+  const selectedExportDetail = selectedExportId ? exportDetailsById[selectedExportId] : null
   const selectedExport = selectedExportDetail?.id === selectedExportId ? selectedExportDetail : selectedExportSummary
   const selectedDetailKind: DetailKind | null = selectedPaperId
     ? 'paper'
@@ -3250,7 +3250,6 @@ function App() {
 
     async function loadSelectedExportDetail() {
       if (!selectedExportId) {
-        setSelectedExportDetail(null)
         setSelectedExportLoading(false)
         return
       }
@@ -3267,7 +3266,7 @@ function App() {
           signal: controller.signal,
         })
         if (cancelled) return
-        setSelectedExportDetail(data)
+        setExportDetailsById((current) => ({ ...current, [data.id]: data }))
         setSelectedExportLoading(false)
       } catch (err) {
         if (cancelled || isAbortError(err) || !(err instanceof Error)) return
@@ -3393,7 +3392,6 @@ function App() {
     setSelectedJobDetailLoading(false)
     setSelectedJobChildren([])
     setSelectedJobAttempts([])
-    setSelectedExportDetail(null)
     setSelectedExportLoading(false)
   }
 
@@ -3517,7 +3515,6 @@ function App() {
     setSelectedJobDetailLoading(false)
     setSelectedJobChildren([])
     setSelectedJobAttempts([])
-    setSelectedExportDetail(null)
     setSelectedExportLoading(false)
     setExpandedParentJobIds([])
     setExpandedJobGroups([])
@@ -3568,7 +3565,9 @@ function App() {
         <div className="drawer-header">
           <div>
             <p className="panel-kicker">{title}</p>
-            <h3>{id ? <span className="mono-cell">{id}</span> : 'Loading details'}</h3>
+            <h3>
+              <DrawerLoadingLine width="72%" />
+            </h3>
           </div>
           <button type="button" className="ghost-button" onClick={closeDrawer}>
             Close
