@@ -533,13 +533,13 @@ export default function AgGridSheet<TData extends RowRecord>({
           </details>
         </div>
 
+        {toolbarActions ? <div className="sheet-grid-toolbar-slot sheet-grid-toolbar-actions">{toolbarActions}</div> : null}
+
         <div className="sheet-grid-toolbar-slot sheet-grid-toolbar-reset-slot">
-          <button type="button" className="ghost-button sheet-reset-button" onClick={resetView}>
-            Reset view
+          <button type="button" className="ghost-button sheet-reset-button" title="Reset view" aria-label="Reset view" onClick={resetView}>
+            Reset
           </button>
         </div>
-
-        {toolbarActions ? <div className="sheet-grid-toolbar-slot sheet-grid-toolbar-actions">{toolbarActions}</div> : null}
 
         {toolbarSearch ? <div className="sheet-grid-toolbar-slot sheet-grid-toolbar-search">{toolbarSearch}</div> : null}
 
