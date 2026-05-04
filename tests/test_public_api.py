@@ -328,6 +328,7 @@ def test_public_paper_detail_returns_full_payload(db_env):
 def test_health_reports_serial_queue_runtime_metadata(db_env, monkeypatch):
     monkeypatch.setenv("GITHUB_TOKEN", "")
     monkeypatch.setenv("REFRESH_METADATA_GITHUB_MIN_INTERVAL", "0.5")
+    monkeypatch.setenv("SQL_SEARCH_MODE", "read_only")
     clear_settings_cache()
 
     with TestClient(create_app()) as client:
@@ -336,6 +337,7 @@ def test_health_reports_serial_queue_runtime_metadata(db_env, monkeypatch):
     assert response.status_code == 200
     payload = response.json()
     assert payload["queue_mode"] == "serial"
+    assert payload["sql_search_mode"] == "read_only"
     assert payload["github_auth_configured"] is False
     assert payload["effective_github_min_interval_seconds"] == 60.0
     assert payload["step_providers"]["sync_papers"] == [

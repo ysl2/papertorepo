@@ -987,8 +987,51 @@ summary:focus {
   border-radius: 12px;
 }
 
+.sheet-search-field.mode-enabled input {
+  padding-left: 128px;
+}
+
 .sheet-search-field.busy input {
   padding-right: 108px;
+}
+
+.sheet-search-mode-toggle {
+  position: absolute;
+  top: 50%;
+  left: 6px;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: 112px;
+  height: 28px;
+  padding: 2px;
+  transform: translateY(-50%);
+  border: 1px solid rgba(47, 65, 56, 0.12);
+  border-radius: 9px;
+  background: rgba(242, 245, 241, 0.92);
+}
+
+.sheet-search-mode-toggle button {
+  min-height: 22px;
+  padding: 0 6px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.sheet-search-mode-toggle button.active {
+  background: white;
+  color: var(--text);
+  box-shadow: 0 4px 10px rgba(31, 40, 36, 0.08);
+}
+
+.sheet-search-mode-toggle button:disabled {
+  cursor: wait;
+  opacity: 0.72;
 }
 
 .sheet-search-cancel-button {

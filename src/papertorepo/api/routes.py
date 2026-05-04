@@ -10,7 +10,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, status
 from fastapi.responses import FileResponse
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from papertorepo.core.config import get_settings
@@ -27,7 +27,7 @@ from papertorepo.jobs.queue import (
     serialize_job,
     serialize_jobs,
 )
-from papertorepo.db.models import ExportRecord, GitHubRepo, Job, JobType, Paper, RepoStableStatus
+from papertorepo.db.models import ExportRecord, GitHubRepo, Job, JobStatus, JobType, Paper, RepoStableStatus
 from papertorepo.api.schemas import (
     DashboardStats,
     ExportRead,
@@ -451,9 +451,117 @@ def _cancel_sql_request(request_id: str) -> SqlCancelResponse:
     )
 
 
-def _execute_driver_sql(db: Session, query: str, request_id: str | None = None) -> SqlResponse:
+def _disable_read_only_sql_transaction(cursor: object, dialect_name: str | None) -> None:
+    if dialect_name == "sqlite":
+        cursor.execute("PRAGMA query_only = OFF")
+
+
+def _has_running_or_stopping_job(db: Session) -> bool:
+    return (
+        db.query(Job.id)
+        .filter(
+            Job.finished_at.is_(None),
+            or_(
+                Job.status == JobStatus.running,
+                Job.stop_requested_at.isnot(None),
+            )
+        )
+        .limit(1)
+        .first()
+        is not None
+    )
+
+
+def _execute_read_only_sql(db: Session, query: str, request_id: str | None = None) -> SqlResponse:
+    connection = db.connection()
     raw_connection = _driver_connection_from_session(db)
-    is_postgresql = db.bind is not None and db.bind.dialect.name == "postgresql"
+    dialect_name = db.bind.dialect.name if db.bind is not None else None
+    is_postgresql = dialect_name == "postgresql"
+    registered_request_id: str | None = None
+    cursor = None
+
+    if request_id:
+        cancel_connection = raw_connection if is_postgresql else None
+        if not _register_sql_request(request_id, cancel_connection):
+            return _sql_error_response(f"SQL request {request_id} is already running")
+        registered_request_id = request_id
+
+    try:
+        if dialect_name == "postgresql":
+            connection.exec_driver_sql("SET TRANSACTION READ ONLY")
+        elif dialect_name == "sqlite":
+            cursor = raw_connection.cursor()
+            cursor.execute("PRAGMA query_only = ON")
+        result = connection.exec_driver_sql(query)
+        if result.returns_rows:
+            columns = (
+                _sql_column_names(result.cursor.description)
+                if result.cursor is not None and result.cursor.description is not None
+                else [str(key) for key in result.keys()]
+            )
+            rows = [_serialize_sql_row(dict(zip(columns, row))) for row in result.fetchall()]
+            column_refs = _sql_column_source_refs(result.cursor, len(columns)) if result.cursor is not None else []
+            column_sources = _sql_column_sources(column_refs, raw_connection)
+            response = SqlResponse(
+                ok=True,
+                has_result_set=True,
+                columns=columns,
+                column_sources=[SqlColumnSource(**source) for source in column_sources],
+                rows=rows,
+                row_count=len(rows),
+                message=None,
+            )
+        else:
+            message = _sql_status_message(result.cursor) if result.cursor is not None else None
+            response = SqlResponse(
+                ok=True,
+                has_result_set=False,
+                columns=[],
+                column_sources=[],
+                rows=[],
+                row_count=0,
+                message=message,
+            )
+        db.rollback()
+        if response.has_result_set:
+            logger.info("Read-only SQL query returned %d rows, %d columns", response.row_count, len(response.columns))
+        else:
+            logger.info("Read-only SQL statement executed: %s", response.message or "no result set")
+        return response
+    except Exception as exc:
+        db.rollback()
+        error_message = str(exc)
+        logger.warning("Read-only SQL execution failed: %s", error_message)
+        return _sql_error_response(error_message)
+    finally:
+        if cursor is not None:
+            try:
+                _disable_read_only_sql_transaction(cursor, dialect_name)
+            except Exception as exc:
+                logger.warning("SQL read-only cleanup failed: %s", exc)
+            cursor.close()
+        if registered_request_id is not None:
+            _unregister_sql_request(registered_request_id)
+
+
+def _execute_driver_sql(
+    db: Session,
+    query: str,
+    request_id: str | None = None,
+    mode: Literal["off", "read_only", "read_write"] = "read_write",
+) -> SqlResponse:
+    if mode == "off":
+        logger.info("SQL execution rejected because SQL search is disabled")
+        return _sql_error_response("SQL search is disabled")
+    if mode == "read_only":
+        return _execute_read_only_sql(db, query, request_id=request_id)
+    if mode == "read_write" and _has_running_or_stopping_job(db):
+        logger.warning("Read-write SQL rejected because a job is running or stopping")
+        return _sql_error_response("Read-write SQL is disabled while jobs are running or stopping")
+
+    raw_connection = _driver_connection_from_session(db)
+    dialect_name = db.bind.dialect.name if db.bind is not None else None
+    is_postgresql = dialect_name == "postgresql"
     registered_request_id: str | None = None
     cursor = None
 
@@ -465,7 +573,7 @@ def _execute_driver_sql(db: Session, query: str, request_id: str | None = None) 
 
     try:
         cursor = raw_connection.cursor()
-        if db.bind is not None and db.bind.dialect.name == "postgresql":
+        if dialect_name == "postgresql":
             cursor.execute(query, prepare=False)
         else:
             cursor.execute(query)
@@ -510,6 +618,7 @@ def register_routes(app: FastAPI) -> None:
             api_prefix=settings.api_prefix,
             default_categories=settings.default_categories_list,
             database_dialect=dialect_name,
+            sql_search_mode=settings.sql_search_mode,
             queue_mode="serial",
             github_auth_configured=github_auth_configured,
             effective_github_min_interval_seconds=effective_github_min_interval_seconds,
@@ -739,7 +848,7 @@ def register_routes(app: FastAPI) -> None:
                 row_count=0,
                 message="Empty query",
             )
-        return _execute_driver_sql(db, query, request_id=request.request_id)
+        return _execute_driver_sql(db, query, request_id=request.request_id, mode=get_settings().sql_search_mode)
 
     @router.post("/sql/{request_id}/cancel", response_model=SqlCancelResponse)
     def cancel_sql(request_id: str) -> SqlCancelResponse:

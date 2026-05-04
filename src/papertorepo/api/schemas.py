@@ -19,6 +19,7 @@ class HealthRead(BaseModel):
     api_prefix: str
     default_categories: list[str]
     database_dialect: str
+    sql_search_mode: Literal["off", "read_only", "read_write"]
     queue_mode: Literal["serial"]
     github_auth_configured: bool
     effective_github_min_interval_seconds: float

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
+import pytest
 from fastapi.testclient import TestClient
 
 from papertorepo.api.app import app
@@ -12,8 +13,17 @@ from papertorepo.api.routes import (
     _sql_column_sources_from_pgresult,
     _unregister_sql_request,
 )
+from papertorepo.core.config import clear_settings_cache
 from papertorepo.db.session import session_scope
-from papertorepo.db.models import Paper, utc_now
+from papertorepo.db.models import Job, JobStatus, JobType, Paper, utc_now
+
+
+@pytest.fixture(autouse=True)
+def enable_sql_mode(monkeypatch):
+    monkeypatch.setenv("SQL_SEARCH_MODE", "read_write")
+    clear_settings_cache()
+    yield
+    clear_settings_cache()
 
 
 def at_utc_midnight(value: date) -> datetime:
@@ -46,6 +56,22 @@ def null_source() -> dict[str, None]:
         "source_table": None,
         "source_column": None,
     }
+
+
+def test_sql_endpoint_is_disabled_when_configured_off(db_env, monkeypatch):
+    monkeypatch.setenv("SQL_SEARCH_MODE", "off")
+    clear_settings_cache()
+
+    from papertorepo.api.app import create_app
+
+    with TestClient(create_app()) as client:
+        response = client.post("/api/v1/sql", json={"query": "SELECT 1"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["has_result_set"] is False
+    assert body["message"] == "SQL search is disabled"
 
 
 def test_sql_select_returns_rows(db_env):
@@ -129,6 +155,80 @@ def test_sql_update_returns_no_result_set(db_env):
     assert response.json()["rows"][0]["title"] == "Updated"
 
 
+def test_sql_read_only_mode_allows_select(db_env, monkeypatch):
+    monkeypatch.setenv("SQL_SEARCH_MODE", "read_only")
+    clear_settings_cache()
+    insert_test_paper("2604.00001")
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/sql", json={"query": "SELECT title FROM papers WHERE arxiv_id = '2604.00001'"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["has_result_set"] is True
+    assert body["rows"][0]["title"] == "Paper 2604.00001"
+
+
+def test_sql_read_only_mode_rejects_update(db_env, monkeypatch):
+    monkeypatch.setenv("SQL_SEARCH_MODE", "read_only")
+    clear_settings_cache()
+    insert_test_paper("2604.00001")
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/sql",
+            json={"query": "UPDATE papers SET title = 'Updated' WHERE arxiv_id = '2604.00001'"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["has_result_set"] is False
+    assert body["message"] is not None
+    assert "readonly" in body["message"].lower() or "read-only" in body["message"].lower()
+
+    with TestClient(app) as client:
+        select_response = client.post("/api/v1/sql", json={"query": "SELECT title FROM papers WHERE arxiv_id = '2604.00001'"})
+    assert select_response.json()["rows"][0]["title"] == "Paper 2604.00001"
+
+
+def test_sql_read_only_mode_rejects_multiple_statements(db_env, monkeypatch):
+    monkeypatch.setenv("SQL_SEARCH_MODE", "read_only")
+    clear_settings_cache()
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/sql", json={"query": "SELECT 1; SELECT 2"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["message"] is not None
+    assert "one statement" in body["message"].lower() or "multiple" in body["message"].lower()
+
+
+def test_sql_read_write_mode_rejects_when_job_is_running(db_env):
+    with session_scope() as db:
+        db.add(
+            Job(
+                job_type=JobType.sync_papers,
+                status=JobStatus.running,
+                attempt_series_key="running-sql-block",
+                scope_json={},
+                dedupe_key="running-sql-block",
+            )
+        )
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/sql", json={"query": "SELECT 1"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["has_result_set"] is False
+    assert body["message"] == "Read-write SQL is disabled while jobs are running or stopping"
+
+
 def test_sql_nonexistent_table_returns_error(db_env):
     with TestClient(app) as client:
         response = client.post("/api/v1/sql", json={"query": "SELECT * FROM nonexistent_table_xyz"})
@@ -162,6 +262,37 @@ def test_sql_datetime_columns_serialized_as_strings(db_env):
     assert body["ok"] is True
     row = body["rows"][0]
     assert isinstance(row["published_at"], str)
+
+
+class FakeSqlCursor:
+    def __init__(self) -> None:
+        self.set_index = 0
+        self.statusmessage = "SELECT 1"
+        self.description = [("first_value",)]
+
+    def fetchall(self):
+        if self.set_index == 0:
+            return [(1,)]
+        return [(2,)]
+
+    def nextset(self) -> bool:
+        if self.set_index == 0:
+            self.set_index = 1
+            self.statusmessage = "SELECT 1"
+            self.description = [("second_value",)]
+            return True
+        return False
+
+
+def test_sql_response_from_cursor_returns_last_result_set():
+    from papertorepo.api.routes import _sql_response_from_cursor
+
+    response = _sql_response_from_cursor(FakeSqlCursor())
+
+    assert response.ok is True
+    assert response.has_result_set is True
+    assert response.columns == ["second_value"]
+    assert response.rows == [{"second_value": 2}]
 
 
 def test_sql_request_id_cleans_up_after_execution(db_env):

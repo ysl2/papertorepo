@@ -29,12 +29,14 @@ type PreviewTab = 'papers' | 'jobs' | 'exports'
 type TimeMode = 'day' | 'month' | 'range'
 type StepJob = 'sync-papers' | 'find-repos' | 'refresh-metadata' | 'export'
 type ExportMode = 'all_papers' | 'papers_view'
+type SqlSearchMode = 'off' | 'read_only' | 'read_write'
 
 type Health = {
   app_name: string
   api_prefix: string
   default_categories: string[]
   database_dialect: string
+  sql_search_mode: SqlSearchMode
   queue_mode: 'serial'
   github_auth_configured: boolean
   effective_github_min_interval_seconds: number
@@ -216,9 +218,11 @@ type SqlResult = {
   columnSources: SqlColumnSource[]
   rows: Record<string, unknown>[]
   rowCount: number
+  message: string | null
 }
 
 type SearchMode = 'idle' | 'quick' | 'sql'
+type SearchInputMode = 'search' | 'sql'
 type SqlRunState = 'idle' | 'running' | 'canceling'
 type DetailKind = 'paper' | 'job' | 'export'
 type SqlSourceTable = 'papers' | 'jobs' | 'exports'
@@ -313,8 +317,9 @@ const ARXIV_CATEGORY_PATTERN = /^[a-z]+(?:-[a-z]+)*(?:\.[A-Za-z-]+)?$/
 const CATEGORIES_HINT = 'cs.CV, cs.LG'
 const RANGE_ORDER_HINT = 'From ≤ To'
 const COPY_FEEDBACK_MS = 500
-const SQL_FEEDBACK_MS = 3000
-const SQL_SEARCH_PLACEHOLDER = 'Search or enter SQL...'
+const SQL_SEARCH_MODE_STORAGE_KEY = 'papertorepo:sql-search-input-mode:v1'
+const SQL_SEARCH_PLACEHOLDER = 'Enter SQL...'
+const QUICK_SEARCH_PLACEHOLDER = 'Search...'
 const SQL_ROW_INDEX_KEY = '__row_idx__'
 const SQL_RESULT_PERSISTENCE_ID = 'papertorepo-sql-result'
 
@@ -569,6 +574,25 @@ function loadSavedScope(): ScopeState {
     }
   } catch {
     return defaults
+  }
+}
+
+function loadSavedSearchInputMode(): SearchInputMode {
+  if (typeof window === 'undefined') return 'search'
+  try {
+    return window.localStorage.getItem(SQL_SEARCH_MODE_STORAGE_KEY) === 'sql' ? 'sql' : 'search'
+  } catch {
+    return 'search'
+  }
+}
+
+function emptySqlResult(message: string | null = null): SqlResult {
+  return {
+    columns: [],
+    columnSources: [],
+    rows: [],
+    rowCount: 0,
+    message,
   }
 }
 
@@ -1657,6 +1681,7 @@ function App() {
   const [tableSearchCommitted, setTableSearchCommitted] = useState('')
   const [tableSearchRunId, setTableSearchRunId] = useState(0)
   const [searchMode, setSearchMode] = useState<SearchMode>('idle')
+  const [searchInputMode, setSearchInputMode] = useState<SearchInputMode>(() => loadSavedSearchInputMode())
   const [sqlRunState, setSqlRunState] = useState<SqlRunState>('idle')
   const [sqlResult, setSqlResult] = useState<SqlResult | null>(null)
   const [sqlFeedbackMessage, setSqlFeedbackMessage] = useState<string | null>(null)
@@ -1698,7 +1723,6 @@ function App() {
   const historyAbortControllersRef = useRef<Map<string, AbortController>>(new Map())
   const queueHandoffTimeoutRef = useRef<number | null>(null)
   const copyFeedbackTimeoutRef = useRef<number | null>(null)
-  const sqlFeedbackTimeoutRef = useRef<number | null>(null)
   const activeSqlRequestIdRef = useRef<string | null>(null)
   const activeSqlAbortControllerRef = useRef<AbortController | null>(null)
   const selectedJobDetailHydratedJobIdRef = useRef<string | null>(null)
@@ -1748,6 +1772,9 @@ function App() {
     : 'GitHub API settings loading'
 
   const liveScope = useMemo(() => resolveScope(scope), [scope])
+  const sqlSearchMode = health?.sql_search_mode ?? 'off'
+  const sqlSearchEnabled = sqlSearchMode !== 'off'
+  const effectiveSearchInputMode: SearchInputMode = sqlSearchEnabled ? searchInputMode : 'search'
   const sqlModeActive = searchMode === 'sql' && sqlResult !== null
   const sqlBusy = sqlRunState !== 'idle'
   const filteredPaperIds = previewTab === 'papers' && !sqlModeActive ? visibleKeys : []
@@ -1765,22 +1792,11 @@ function App() {
   }, [])
 
   const clearSqlFeedback = useCallback(() => {
-    if (sqlFeedbackTimeoutRef.current !== null) {
-      window.clearTimeout(sqlFeedbackTimeoutRef.current)
-      sqlFeedbackTimeoutRef.current = null
-    }
     setSqlFeedbackMessage(null)
   }, [])
 
   const showSqlFeedback = useCallback((message: string) => {
-    if (sqlFeedbackTimeoutRef.current !== null) {
-      window.clearTimeout(sqlFeedbackTimeoutRef.current)
-    }
     setSqlFeedbackMessage(message)
-    sqlFeedbackTimeoutRef.current = window.setTimeout(() => {
-      setSqlFeedbackMessage(null)
-      sqlFeedbackTimeoutRef.current = null
-    }, SQL_FEEDBACK_MS)
   }, [])
 
   const ignoreSelectedKeyChange = useCallback((key: string | null) => {
@@ -1868,11 +1884,17 @@ function App() {
       if (copyFeedbackTimeoutRef.current !== null) {
         window.clearTimeout(copyFeedbackTimeoutRef.current)
       }
-      if (sqlFeedbackTimeoutRef.current !== null) {
-        window.clearTimeout(sqlFeedbackTimeoutRef.current)
-      }
     }
   }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      window.localStorage.setItem(SQL_SEARCH_MODE_STORAGE_KEY, searchInputMode)
+    } catch {
+      // Ignore storage failures; the mode still works for the current session.
+    }
+  }, [searchInputMode])
 
   useEffect(() => {
     const query = tableSearchCommitted.trim()
@@ -1899,6 +1921,7 @@ function App() {
             columnSources: normalizeSqlColumnSources(response.columns, response.column_sources ?? []),
             rows: response.rows,
             rowCount: response.row_count,
+            message: response.message,
           })
           setSearchMode('sql')
           setVisibleKeys([])
@@ -1915,8 +1938,9 @@ function App() {
 
         setSqlResult(null)
         if (activeSqlRequestIdRef.current !== requestId) return
+        setSearchMode('sql')
         if (response.ok) {
-          setSearchMode('idle')
+          setSqlResult(emptySqlResult(response.message))
           if (response.message) {
             showSqlFeedback(response.message)
           }
@@ -1926,13 +1950,14 @@ function App() {
           return
         }
 
-        setSearchMode('quick')
+        setSqlResult(emptySqlResult(response.message))
+        showSqlFeedback(response.message || 'SQL execution failed')
       } catch (err) {
         if (isAbortError(err) || activeSqlRequestIdRef.current !== requestId) return
         if (!isAbortError(err) && err instanceof Error) {
-          setSearchMode('quick')
-          setSqlResult(null)
-          setError(`SQL: ${err.message}`)
+          setSearchMode('sql')
+          setSqlResult(emptySqlResult(err.message))
+          showSqlFeedback(err.message)
         }
       } finally {
         if (activeSqlRequestIdRef.current === requestId) {
@@ -3460,14 +3485,31 @@ function App() {
     setSelectedExportId(target.id)
   }
 
+  function handleSearchInputModeChange(nextMode: SearchInputMode) {
+    if (!sqlSearchEnabled || sqlBusy || nextMode === searchInputMode) return
+    setSearchInputMode(nextMode)
+    clearSqlFeedback()
+    setSearchMode('idle')
+    setSqlResult(null)
+    setVisibleKeys([])
+    activeSqlRequestIdRef.current = null
+    activeSqlAbortControllerRef.current = null
+    setSqlRunState('idle')
+  }
+
   function commitTableSearch() {
     if (sqlBusy) return
     clearSqlFeedback()
     const query = tableSearchInput.trim()
-    if (query) {
+    const runSql = query && sqlSearchEnabled && effectiveSearchInputMode === 'sql'
+    if (runSql) {
       activeSqlRequestIdRef.current = createSqlRequestId()
       activeSqlAbortControllerRef.current = null
       setSqlRunState('running')
+    } else {
+      activeSqlRequestIdRef.current = null
+      activeSqlAbortControllerRef.current = null
+      setSqlRunState('idle')
     }
     setTableSearchCommitted(tableSearchInput)
     setTableSearchRunId((value) => value + 1)
@@ -3478,6 +3520,15 @@ function App() {
       setSearchMode('idle')
       setSqlResult(null)
       setVisibleKeys([])
+      return
+    }
+    if (runSql) {
+      setSearchMode('sql')
+      setSqlResult(null)
+      setVisibleKeys([])
+    } else {
+      setSearchMode('quick')
+      setSqlResult(null)
     }
   }
 
@@ -3933,6 +3984,8 @@ function App() {
 
   const activeLoadedRows = previewTab === 'papers' ? papers.length : previewTab === 'jobs' ? jobRows.length : exportsData.length
   const activeTotalRows = previewTab === 'papers' ? paperTotalRows : activeLoadedRows
+  const sqlMessage = sqlModeActive ? sqlResult.message : null
+  const sqlEmptyMessage = sqlMessage || 'No SQL rows returned.'
   const sqlSourceTable = sqlModeActive ? uniqueSupportedSqlSourceTable(sqlResult.columnSources) : null
   const sqlSourceTotalRows =
     sqlSourceTable === 'papers'
@@ -3968,7 +4021,27 @@ function App() {
   )
 
   const sheetToolbarSearch = (
-    <div className={sqlBusy ? 'sheet-search-field busy' : 'sheet-search-field'}>
+    <div className={`${sqlBusy ? 'sheet-search-field busy' : 'sheet-search-field'} ${sqlSearchEnabled ? 'mode-enabled' : ''}`}>
+      {sqlSearchEnabled ? (
+        <div className="sheet-search-mode-toggle" role="group" aria-label="Search input mode">
+          <button
+            type="button"
+            className={effectiveSearchInputMode === 'search' ? 'active' : ''}
+            onClick={() => handleSearchInputModeChange('search')}
+            disabled={sqlBusy}
+          >
+            Search
+          </button>
+          <button
+            type="button"
+            className={effectiveSearchInputMode === 'sql' ? 'active' : ''}
+            onClick={() => handleSearchInputModeChange('sql')}
+            disabled={sqlBusy}
+          >
+            SQL
+          </button>
+        </div>
+      ) : null}
       <input
         className="floating-placeholder-input"
         value={tableSearchInput}
@@ -3978,8 +4051,8 @@ function App() {
           event.preventDefault()
           commitTableSearch()
         }}
-        placeholder={SQL_SEARCH_PLACEHOLDER}
-        aria-label="Search or SQL"
+        placeholder={effectiveSearchInputMode === 'sql' ? SQL_SEARCH_PLACEHOLDER : QUICK_SEARCH_PLACEHOLDER}
+        aria-label={effectiveSearchInputMode === 'sql' ? 'SQL' : 'Search'}
         aria-busy={sqlBusy}
         disabled={sqlBusy}
       />
@@ -4002,7 +4075,7 @@ function App() {
     </span>
   )
 
-  const sheetToolbarMessage = sqlFeedbackMessage ? <span className="sheet-feedback-chip">{sqlFeedbackMessage}</span> : null
+  const sheetToolbarMessage = sqlFeedbackMessage ? <span className="sheet-feedback-chip" title={sqlFeedbackMessage}>{sqlFeedbackMessage}</span> : null
 
   const sheetToolbarActions = (
     <button
@@ -4101,7 +4174,7 @@ function App() {
         onRowOpen={sqlModeActive ? handleSqlRowOpen : undefined}
         quickSearch={activeQuickSearch}
         persistenceId={sqlModeActive ? SQL_RESULT_PERSISTENCE_ID : 'papertorepo-papers-v8'}
-        emptyMessage={sqlModeActive ? 'No SQL rows returned.' : 'No papers are stored yet.'}
+        emptyMessage={sqlModeActive ? sqlEmptyMessage : 'No papers are stored yet.'}
         toolbarLeading={sheetToolbarLeading}
         toolbarActions={sheetToolbarActions}
         toolbarSearch={sheetToolbarSearch}
@@ -4128,7 +4201,7 @@ function App() {
         onRowOpen={sqlModeActive ? handleSqlRowOpen : undefined}
         quickSearch={activeQuickSearch}
         persistenceId={sqlModeActive ? SQL_RESULT_PERSISTENCE_ID : 'papertorepo-jobs'}
-        emptyMessage={sqlModeActive ? 'No SQL rows returned.' : 'No jobs yet.'}
+        emptyMessage={sqlModeActive ? sqlEmptyMessage : 'No jobs yet.'}
         toolbarLeading={sheetToolbarLeading}
         toolbarActions={sheetToolbarActions}
         toolbarSearch={sheetToolbarSearch}
@@ -4157,7 +4230,7 @@ function App() {
         onRowOpen={sqlModeActive ? handleSqlRowOpen : undefined}
         quickSearch={activeQuickSearch}
         persistenceId={sqlModeActive ? SQL_RESULT_PERSISTENCE_ID : 'papertorepo-exports'}
-        emptyMessage={sqlModeActive ? 'No SQL rows returned.' : 'No exports yet.'}
+        emptyMessage={sqlModeActive ? sqlEmptyMessage : 'No exports yet.'}
         toolbarLeading={sheetToolbarLeading}
         toolbarActions={sheetToolbarActions}
         toolbarSearch={sheetToolbarSearch}
@@ -4185,6 +4258,7 @@ function App() {
           <span className="meta-chip">job scope: {scopeLabel(liveScope.payload)}</span>
           <span className="meta-chip">queue: {queueModeLabel}</span>
           <span className="meta-chip">database: {health?.database_dialect ?? 'loading'}</span>
+          <span className="meta-chip">sql: {sqlSearchMode.replace('_', '-')}</span>
           <span className="meta-chip">{githubRuntimeLabel}</span>
           <span className="meta-chip">refreshed: {formatClock(lastRefreshedAt)}</span>
           <span className="meta-chip">{hasActiveJobs ? 'jobs/dashboard 1s · tables 20s' : previewTab === 'jobs' ? 'jobs 5s · dashboard 8s' : 'idle · dashboard 8s'}</span>

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -18,6 +19,7 @@ class Settings(BaseSettings):
     raw_fetch_dir_name: str = "raw"
     export_dir_name: str = "exports"
     frontend_dist_dir: Path = Path("frontend/dist")
+    sql_search_mode: Literal["off", "read_only", "read_write"] = "off"
 
     default_categories: str = "cs.CV"
 
