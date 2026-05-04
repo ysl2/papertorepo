@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { AgGridReact } from 'ag-grid-react'
 import {
   AllCommunityModule,
@@ -134,6 +134,12 @@ function clampFreezeCount(value: string | number, visibleColumnCount: number) {
 
 const POPUP_VIEWPORT_GUTTER = 12
 const POPUP_MIN_HEIGHT = 180
+const DISPLAYED_KEYS_SYNC_THROTTLE_MS = 200
+
+function sameStringArray(left: string[], right: string[]) {
+  if (left.length !== right.length) return false
+  return left.every((value, index) => value === right[index])
+}
 
 function clampPopupToViewport(popup: HTMLElement) {
   if (typeof window === 'undefined') return
@@ -273,6 +279,11 @@ export default function AgGridSheet<TData extends RowRecord>({
   const apiRef = useRef<GridApi<TData> | null>(null)
   const columnMenuRef = useRef<HTMLDetailsElement | null>(null)
   const freezeMenuRef = useRef<HTMLDetailsElement | null>(null)
+  const onDisplayedKeysChangeRef = useRef(onDisplayedKeysChange)
+  const displayedKeysSyncTimerRef = useRef<number | null>(null)
+  const displayedKeysSyncFrameRef = useRef<number | null>(null)
+  const displayedKeysSyncForceRef = useRef(false)
+  const lastDisplayedKeysRef = useRef<string[]>([])
   const [columnToggles, setColumnToggles] = useState<ColumnToggle[]>([])
   const [visibleColumnCount, setVisibleColumnCount] = useState(0)
   const [frozenCount, setFrozenCount] = useState(0)
@@ -323,7 +334,11 @@ export default function AgGridSheet<TData extends RowRecord>({
     [],
   )
 
-  function syncDisplayedKeys(api: GridApi<TData>) {
+  useEffect(() => {
+    onDisplayedKeysChangeRef.current = onDisplayedKeysChange
+  }, [onDisplayedKeysChange])
+
+  const syncDisplayedKeys = useCallback((api: GridApi<TData>, options: { force?: boolean } = {}) => {
     const keys: string[] = []
     api.forEachNodeAfterFilterAndSort((node) => {
       if (node.data == null) return
@@ -331,8 +346,44 @@ export default function AgGridSheet<TData extends RowRecord>({
       if (value == null) return
       keys.push(String(value))
     })
-    onDisplayedKeysChange(keys)
-  }
+    if (!options.force && sameStringArray(lastDisplayedKeysRef.current, keys)) return
+    lastDisplayedKeysRef.current = keys
+    onDisplayedKeysChangeRef.current(keys)
+  }, [rowKey])
+
+  const cancelScheduledDisplayedKeysSync = useCallback(() => {
+    if (displayedKeysSyncTimerRef.current !== null) {
+      window.clearTimeout(displayedKeysSyncTimerRef.current)
+      displayedKeysSyncTimerRef.current = null
+    }
+    if (displayedKeysSyncFrameRef.current !== null) {
+      window.cancelAnimationFrame(displayedKeysSyncFrameRef.current)
+      displayedKeysSyncFrameRef.current = null
+    }
+    displayedKeysSyncForceRef.current = false
+  }, [])
+
+  const scheduleDisplayedKeysSync = useCallback((options: { force?: boolean } = {}) => {
+    if (typeof window === 'undefined') return
+    if (options.force) {
+      displayedKeysSyncForceRef.current = true
+    }
+    if (displayedKeysSyncTimerRef.current !== null || displayedKeysSyncFrameRef.current !== null) {
+      return
+    }
+
+    displayedKeysSyncTimerRef.current = window.setTimeout(() => {
+      displayedKeysSyncTimerRef.current = null
+      displayedKeysSyncFrameRef.current = window.requestAnimationFrame(() => {
+        displayedKeysSyncFrameRef.current = null
+        const api = apiRef.current
+        if (!api) return
+        const force = displayedKeysSyncForceRef.current
+        displayedKeysSyncForceRef.current = false
+        syncDisplayedKeys(api, { force })
+      })
+    }, DISPLAYED_KEYS_SYNC_THROTTLE_MS)
+  }, [syncDisplayedKeys])
 
   function syncColumnControls(api: GridApi<TData>) {
     const columnState = api.getColumnState().filter((item) => columnIds.has(item.colId))
@@ -371,7 +422,7 @@ export default function AgGridSheet<TData extends RowRecord>({
   function handleGridReady(event: GridReadyEvent<TData>) {
     apiRef.current = event.api
     syncColumnControls(event.api)
-    syncDisplayedKeys(event.api)
+    syncDisplayedKeys(event.api, { force: true })
   }
 
   useEffect(() => {
@@ -379,6 +430,16 @@ export default function AgGridSheet<TData extends RowRecord>({
     if (!api) return
     api.setGridOption('quickFilterText', quickSearch.trim())
   }, [quickSearch])
+
+  useEffect(() => {
+    scheduleDisplayedKeysSync()
+  }, [quickSearch, rows, scheduleDisplayedKeysSync])
+
+  useEffect(() => {
+    return () => {
+      cancelScheduledDisplayedKeysSync()
+    }
+  }, [cancelScheduledDisplayedKeysSync])
 
   useEffect(() => {
     const api = apiRef.current
@@ -445,8 +506,9 @@ export default function AgGridSheet<TData extends RowRecord>({
     api.resetColumnState()
     api.setGridOption('quickFilterText', quickSearch.trim())
     syncColumnControls(api)
-    syncDisplayedKeys(api)
+    syncDisplayedKeys(api, { force: true })
     onReset?.()
+    scheduleDisplayedKeysSync({ force: true })
   }
 
   function handlePopupPostProcess(params: PostProcessPopupParams<TData>) {
@@ -625,7 +687,7 @@ export default function AgGridSheet<TData extends RowRecord>({
           }}
           onFirstDataRendered={(event) => {
             syncColumnControls(event.api)
-            syncDisplayedKeys(event.api)
+            syncDisplayedKeys(event.api, { force: true })
           }}
           onModelUpdated={(event) => {
             syncDisplayedKeys(event.api)
