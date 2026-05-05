@@ -21,7 +21,7 @@ jobs:
 
       - name: Sync dependencies
         working-directory: backend
-        run: uv sync --dev
+        run: uv sync --dev --locked --default-index https://pypi.org/simple
 
       - name: Run tests
         working-directory: backend
