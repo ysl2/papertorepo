@@ -34,13 +34,25 @@ type SqlSearchMode = 'off' | 'read_only' | 'read_write'
 type Health = {
   app_name: string
   api_prefix: string
-  default_categories: string[]
   database_dialect: string
-  sql_search_mode: SqlSearchMode
   queue_mode: 'serial'
   github_auth_configured: boolean
   effective_github_min_interval_seconds: number
+}
+
+type RuntimeConfig = {
+  default_categories: string[]
+  sql_search_mode: SqlSearchMode
   step_providers: Record<string, string[]>
+  active_dashboard_poll_ms: number
+  idle_dashboard_poll_ms: number
+  active_jobs_poll_ms: number
+  passive_jobs_poll_ms: number
+  table_refresh_poll_ms: number
+  paper_batch_size: number
+  repo_preview_limit: number
+  job_preview_limit: number
+  displayed_keys_sync_throttle_ms: number
 }
 
 type Job = {
@@ -299,13 +311,6 @@ type JobHistoryChevronCellRendererProps = CustomCellRendererProps<JobGridRow> & 
 
 type JobAttemptCellRendererProps = CustomCellRendererProps<JobGridRow>
 
-const PAPER_BATCH_SIZE = 1000
-const REPO_PREVIEW_LIMIT = 10000
-const JOB_PREVIEW_LIMIT = 500
-const ACTIVE_DASHBOARD_POLL_MS = 1000
-const IDLE_DASHBOARD_POLL_MS = 8000
-const ACTIVE_JOBS_POLL_MS = 1000
-const PASSIVE_JOBS_POLL_MS = 5000
 const LEGACY_SCOPE_STORAGE_KEY = 'papertorepo:scope:v3'
 const OLDER_SCOPE_STORAGE_KEY = 'papertorepo:scope:v4'
 const PREVIOUS_SCOPE_STORAGE_KEY = 'papertorepo:scope:v5'
@@ -723,6 +728,10 @@ function formatSeconds(value: number | null | undefined) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
   const rounded = Number.isInteger(value) ? String(value) : value.toFixed(1).replace(/\.0$/, '')
   return `${rounded}s`
+}
+
+function formatMillisecondsAsSeconds(value: number) {
+  return formatSeconds(value / 1000)
 }
 
 function formatInteger(value: number) {
@@ -1650,6 +1659,7 @@ function App() {
   const rerunJobRef = useRef<(jobId: string) => void>(() => {})
   const stopJobRef = useRef<(jobId: string) => void>(() => {})
   const [health, setHealth] = useState<Health | null>(null)
+  const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfig | null>(null)
   const [dashboard, setDashboard] = useState<Dashboard | null>(null)
   const [papers, setPapers] = useState<PaperSummary[]>([])
   const [paperDetailsById, setPaperDetailsById] = useState<Record<string, PaperDetail>>({})
@@ -1734,8 +1744,8 @@ function App() {
   const exportNameValid = exportBaseName.length > 0
   const categoriesFieldError = useMemo(() => categoriesValidationMessage(scope.categories), [scope.categories])
   const categoriesFieldInvalid = useMemo(
-    () => categoriesFieldError !== null && (hasTypedValue(scope.categories) || health !== null),
-    [categoriesFieldError, health, scope.categories],
+    () => categoriesFieldError !== null && (hasTypedValue(scope.categories) || runtimeConfig !== null),
+    [categoriesFieldError, runtimeConfig, scope.categories],
   )
   const categoriesShowGhostHint = useMemo(
     () => categoriesFieldInvalid && hasTypedValue(scope.categories),
@@ -1764,15 +1774,32 @@ function App() {
     () => hasTypedValue(scope.to) && (rangeToFieldError !== null || rangeOrderInvalid),
     [rangeOrderInvalid, rangeToFieldError, scope.to],
   )
+  const activeJobsInList = jobs.some((job) => {
+    const displayStatus = jobDisplayStatus(job)
+    return displayStatus === 'queued' || displayStatus === 'running' || displayStatus === 'stopping'
+  })
+  const hasActiveJobs =
+    launchingJob !== null ||
+    activeJobsInList ||
+    (dashboard?.pending_jobs ?? 0) > 0 ||
+    (dashboard?.running_jobs ?? 0) > 0 ||
+    (dashboard?.stopping_jobs ?? 0) > 0
   const queueModeLabel = health?.queue_mode === 'serial' ? 'serial queue' : 'loading queue mode'
   const githubRuntimeLabel = health
     ? health.github_auth_configured
       ? `GitHub token on · ${formatSeconds(health.effective_github_min_interval_seconds)} min interval`
       : `GitHub token off · ${formatSeconds(health.effective_github_min_interval_seconds)} min interval`
     : 'GitHub API settings loading'
+  const frontendRefreshLabel = runtimeConfig
+    ? hasActiveJobs
+      ? `jobs/dashboard ${formatMillisecondsAsSeconds(runtimeConfig.active_jobs_poll_ms)} · tables ${formatMillisecondsAsSeconds(runtimeConfig.table_refresh_poll_ms)}`
+      : previewTab === 'jobs'
+        ? `jobs ${formatMillisecondsAsSeconds(runtimeConfig.passive_jobs_poll_ms)} · dashboard ${formatMillisecondsAsSeconds(runtimeConfig.idle_dashboard_poll_ms)}`
+        : `idle · dashboard ${formatMillisecondsAsSeconds(runtimeConfig.idle_dashboard_poll_ms)}`
+    : 'runtime config loading'
 
   const liveScope = useMemo(() => resolveScope(scope), [scope])
-  const sqlSearchMode = health?.sql_search_mode ?? 'off'
+  const sqlSearchMode = runtimeConfig?.sql_search_mode ?? 'off'
   const sqlSearchEnabled = sqlSearchMode !== 'off'
   const effectiveSearchInputMode: SearchInputMode = sqlSearchEnabled ? searchInputMode : 'search'
   const sqlModeActive = searchMode === 'sql' && sqlResult !== null
@@ -1982,6 +2009,23 @@ function App() {
       .then((data) => {
         if (cancelled) return
         setHealth(data)
+      })
+      .catch((err: Error) => {
+        if (!cancelled) setError(err.message)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+
+    fetchJson<RuntimeConfig>('/api/v1/runtime-config')
+      .then((data) => {
+        if (cancelled) return
+        setRuntimeConfig(data)
         const categories = data.default_categories.join(', ')
         startTransition(() => {
           setScope((current) => ({ ...current, categories: current.categories || categories }))
@@ -2032,17 +2076,6 @@ function App() {
     selectedJobIdRef.current = selectedJobId
   }, [selectedJobId])
 
-  const activeJobsInList = jobs.some((job) => {
-    const displayStatus = jobDisplayStatus(job)
-    return displayStatus === 'queued' || displayStatus === 'running' || displayStatus === 'stopping'
-  })
-  const hasActiveJobs =
-    launchingJob !== null ||
-    activeJobsInList ||
-    (dashboard?.pending_jobs ?? 0) > 0 ||
-    (dashboard?.running_jobs ?? 0) > 0 ||
-    (dashboard?.stopping_jobs ?? 0) > 0
-
   function clearRerunSelectionHandoff() {
     rerunSelectionHandoffJobIdRef.current = null
     if (rerunSelectionHandoffTimeoutRef.current !== null) {
@@ -2071,12 +2104,16 @@ function App() {
   }, [])
 
   useEffect(() => {
-    const intervalMs = hasActiveJobs ? ACTIVE_DASHBOARD_POLL_MS : IDLE_DASHBOARD_POLL_MS
+    if (!runtimeConfig) return
+    const intervalMs = hasActiveJobs
+      ? runtimeConfig.active_dashboard_poll_ms
+      : runtimeConfig.idle_dashboard_poll_ms
     const timer = window.setInterval(() => setSummaryRefreshTick((value) => value + 1), intervalMs)
     return () => window.clearInterval(timer)
-  }, [hasActiveJobs])
+  }, [hasActiveJobs, runtimeConfig])
 
   useEffect(() => {
+    if (!runtimeConfig) return
     let cancelled = false
 
     async function load() {
@@ -2095,21 +2132,26 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [summaryRefreshTick])
+  }, [runtimeConfig, summaryRefreshTick])
 
   useEffect(() => {
+    if (!runtimeConfig) return
     if (!hasActiveJobs && previewTab !== 'jobs') return
-    const intervalMs = hasActiveJobs ? ACTIVE_JOBS_POLL_MS : PASSIVE_JOBS_POLL_MS
+    const intervalMs = hasActiveJobs
+      ? runtimeConfig.active_jobs_poll_ms
+      : runtimeConfig.passive_jobs_poll_ms
     const timer = window.setInterval(() => setJobsRefreshTick((value) => value + 1), intervalMs)
     return () => window.clearInterval(timer)
-  }, [hasActiveJobs, previewTab])
+  }, [hasActiveJobs, previewTab, runtimeConfig])
 
   useEffect(() => {
+    if (!runtimeConfig) return
+    const config = runtimeConfig
     let cancelled = false
 
     async function loadJobs() {
       try {
-        const jobData = await fetchJson<Job[]>(`/api/v1/jobs?limit=${JOB_PREVIEW_LIMIT}&view=latest&root_only=true`)
+        const jobData = await fetchJson<Job[]>(`/api/v1/jobs?limit=${config.job_preview_limit}&view=latest&root_only=true`)
         if (cancelled) return
         setJobs(jobData)
         setLastRefreshedAt(new Date().toISOString())
@@ -2123,7 +2165,7 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [jobsRefreshTick, previewTab])
+  }, [jobsRefreshTick, previewTab, runtimeConfig])
 
   const rootJobById = useMemo(() => {
     const result = new Map<string, Job>()
@@ -2230,6 +2272,8 @@ function App() {
 
   const loadChildJobs = useCallback(
     async (parentId: string, options: { force?: boolean } = {}) => {
+      if (!runtimeConfig) return
+      const config = runtimeConfig
       const { force = false } = options
       const existingController = childJobAbortControllersRef.current.get(parentId)
       const hasCached = Object.prototype.hasOwnProperty.call(childJobsByParentIdRef.current, parentId)
@@ -2243,7 +2287,7 @@ function App() {
 
       try {
         const children = await fetchJson<Job[]>(
-          `/api/v1/jobs?parent_id=${parentId}&limit=${JOB_PREVIEW_LIMIT}&view=latest`,
+          `/api/v1/jobs?parent_id=${parentId}&limit=${config.job_preview_limit}&view=latest`,
           { signal: controller.signal },
         )
         if (childJobAbortControllersRef.current.get(parentId) !== controller) return
@@ -2261,11 +2305,13 @@ function App() {
         }
       }
     },
-    [setChildJobsLoading],
+    [runtimeConfig, setChildJobsLoading],
   )
 
   const loadJobHistory = useCallback(
     async (groupKey: string, jobId: string, options: { force?: boolean } = {}) => {
+      if (!runtimeConfig) return
+      const config = runtimeConfig
       const { force = false } = options
       const existingController = historyAbortControllersRef.current.get(groupKey)
       const hasCached = Object.prototype.hasOwnProperty.call(jobAttemptHistoriesRef.current, groupKey)
@@ -2278,7 +2324,7 @@ function App() {
       setJobHistoryLoading(groupKey, true)
 
       try {
-        const attempts = await fetchJson<Job[]>(`/api/v1/jobs/${jobId}/attempts?limit=${JOB_PREVIEW_LIMIT}`, {
+        const attempts = await fetchJson<Job[]>(`/api/v1/jobs/${jobId}/attempts?limit=${config.job_preview_limit}`, {
           signal: controller.signal,
         })
         if (historyAbortControllersRef.current.get(groupKey) !== controller) return
@@ -2296,10 +2342,11 @@ function App() {
         }
       }
     },
-    [setJobHistoryLoading],
+    [runtimeConfig, setJobHistoryLoading],
   )
 
   useEffect(() => {
+    if (!runtimeConfig) return
     if (previewTab !== 'jobs') return
     for (const parentId of validExpandedParentJobIds) {
       void loadChildJobs(parentId)
@@ -2325,15 +2372,18 @@ function App() {
       if (!job) continue
       void loadJobHistory(groupKey, job.id, { force: true })
     }
-  }, [jobsRefreshTick, loadChildJobs, loadJobHistory, previewTab])
+  }, [jobsRefreshTick, loadChildJobs, loadJobHistory, previewTab, runtimeConfig])
 
   useEffect(() => {
+    if (!runtimeConfig) return
     if (!hasActiveJobs) return
-    const timer = window.setInterval(() => setTableRefreshTick((value) => value + 1), 20000)
+    const timer = window.setInterval(() => setTableRefreshTick((value) => value + 1), runtimeConfig.table_refresh_poll_ms)
     return () => window.clearInterval(timer)
-  }, [hasActiveJobs])
+  }, [hasActiveJobs, runtimeConfig])
 
   useEffect(() => {
+    if (!runtimeConfig) return
+    const config = runtimeConfig
     const controller = new AbortController()
     const hadVisibleRows = papersRef.current.length > 0
 
@@ -2343,9 +2393,9 @@ function App() {
       setPapersLoadedCount(0)
 
       try {
-        for (let offset = 0; ; offset += PAPER_BATCH_SIZE) {
+        for (let offset = 0; ; offset += config.paper_batch_size) {
           const batch = await fetchJson<PaperSummary[]>(
-            `/api/v1/papers?limit=${PAPER_BATCH_SIZE}&offset=${offset}`,
+            `/api/v1/papers?limit=${config.paper_batch_size}&offset=${offset}`,
             { signal: controller.signal },
           )
           nextRows.push(...batch)
@@ -2355,7 +2405,7 @@ function App() {
             setPapers([...nextRows])
           }
 
-          if (batch.length < PAPER_BATCH_SIZE) {
+          if (batch.length < config.paper_batch_size) {
             break
           }
         }
@@ -2380,11 +2430,13 @@ function App() {
     return () => {
       controller.abort()
     }
-  }, [tableRefreshTick])
+  }, [runtimeConfig, tableRefreshTick])
 
   useEffect(() => {
+    if (!runtimeConfig) return
+    const config = runtimeConfig
     const controller = new AbortController()
-    const repoLimit = REPO_PREVIEW_LIMIT
+    const repoLimit = config.repo_preview_limit
 
     async function loadRepos() {
       try {
@@ -2405,9 +2457,10 @@ function App() {
     return () => {
       controller.abort()
     }
-  }, [tableRefreshTick])
+  }, [runtimeConfig, tableRefreshTick])
 
   useEffect(() => {
+    if (!runtimeConfig) return
     const controller = new AbortController()
 
     async function loadExports() {
@@ -2434,7 +2487,7 @@ function App() {
     return () => {
       controller.abort()
     }
-  }, [tableRefreshTick])
+  }, [runtimeConfig, tableRefreshTick])
 
   useEffect(() => {
     if (previewTab === 'jobs') return
@@ -3189,12 +3242,14 @@ function App() {
   )
 
   useEffect(() => {
+    if (!runtimeConfig) return
     if (!selectedJobId) return
-    const timer = window.setInterval(() => setSelectedJobRefreshTick((value) => value + 1), ACTIVE_JOBS_POLL_MS)
+    const timer = window.setInterval(() => setSelectedJobRefreshTick((value) => value + 1), runtimeConfig.active_jobs_poll_ms)
     return () => window.clearInterval(timer)
-  }, [selectedJobId])
+  }, [runtimeConfig, selectedJobId])
 
   useEffect(() => {
+    if (!runtimeConfig) return
     let cancelled = false
     const controller = new AbortController()
 
@@ -3233,9 +3288,10 @@ function App() {
       cancelled = true
       controller.abort()
     }
-  }, [selectedJobId, selectedJobRefreshTick])
+  }, [runtimeConfig, selectedJobId, selectedJobRefreshTick])
 
   useEffect(() => {
+    if (!runtimeConfig) return
     let cancelled = false
     const controller = new AbortController()
 
@@ -3267,9 +3323,10 @@ function App() {
       cancelled = true
       controller.abort()
     }
-  }, [selectedPaperId, tableRefreshTick])
+  }, [runtimeConfig, selectedPaperId, tableRefreshTick])
 
   useEffect(() => {
+    if (!runtimeConfig) return
     let cancelled = false
     const controller = new AbortController()
 
@@ -3306,9 +3363,11 @@ function App() {
       cancelled = true
       controller.abort()
     }
-  }, [selectedExportDetail?.id, selectedExportId])
+  }, [runtimeConfig, selectedExportDetail?.id, selectedExportId])
 
   useEffect(() => {
+    if (!runtimeConfig) return
+    const config = runtimeConfig
     let cancelled = false
     const controller = new AbortController()
 
@@ -3328,7 +3387,7 @@ function App() {
       }
 
       try {
-        const data = await fetchJson<Job[]>(`/api/v1/jobs?parent_id=${selectedJob.id}&limit=${JOB_PREVIEW_LIMIT}&view=all`, {
+        const data = await fetchJson<Job[]>(`/api/v1/jobs?parent_id=${selectedJob.id}&limit=${config.job_preview_limit}&view=all`, {
           signal: controller.signal,
         })
         if (cancelled) return
@@ -3348,7 +3407,7 @@ function App() {
       cancelled = true
       controller.abort()
     }
-  }, [selectedJob?.id, selectedJob?.job_type, selectedJobRefreshTick])
+  }, [runtimeConfig, selectedJob?.id, selectedJob?.job_type, selectedJobRefreshTick])
 
   const selectedJobLatestAttempt = useMemo(
     () => selectedJobAttempts.find((job) => isLatestAttempt(job)) || selectedJob,
@@ -3356,6 +3415,8 @@ function App() {
   )
 
   useEffect(() => {
+    if (!runtimeConfig) return
+    const config = runtimeConfig
     let cancelled = false
     const controller = new AbortController()
 
@@ -3382,7 +3443,7 @@ function App() {
       }
 
       try {
-        const data = await fetchJson<Job[]>(`/api/v1/jobs/${selectedJob.id}/attempts?limit=${JOB_PREVIEW_LIMIT}`, {
+        const data = await fetchJson<Job[]>(`/api/v1/jobs/${selectedJob.id}/attempts?limit=${config.job_preview_limit}`, {
           signal: controller.signal,
         })
         if (cancelled) return
@@ -3402,7 +3463,7 @@ function App() {
       cancelled = true
       controller.abort()
     }
-  }, [selectedJob?.attempt_count, selectedJob?.id, selectedJobRefreshTick])
+  }, [runtimeConfig, selectedJob?.attempt_count, selectedJob?.id, selectedJobRefreshTick])
 
   function closeDrawer() {
     clearRerunSelectionHandoff()
@@ -4161,8 +4222,15 @@ function App() {
       </details>
     ) : null
 
-  const activeGrid =
-    previewTab === 'papers' ? (
+  const activeGrid = !runtimeConfig ? (
+    <div className="sheet-grid-shell">
+      <div className="ag-theme-balham sheet-grid-host loading">
+        <div className="sheet-grid-loading-overlay" role="status" aria-live="polite">
+          <strong>Loading runtime config...</strong>
+        </div>
+      </div>
+    </div>
+  ) : previewTab === 'papers' ? (
       <AgGridSheet
         key={sqlModeActive ? 'papers-sql' : 'papers'}
         columns={sqlModeActive ? sqlColumns : paperColumns}
@@ -4188,6 +4256,7 @@ function App() {
         loadingSummaryMode="labelOnly"
         progressCurrent={papersLoadedCount}
         progressTotal={paperProgressTotal}
+        displayedKeysSyncThrottleMs={runtimeConfig.displayed_keys_sync_throttle_ms}
       />
     ) : previewTab === 'jobs' ? (
       <AgGridSheet
@@ -4209,6 +4278,7 @@ function App() {
         toolbarMessage={sheetToolbarMessage}
         onReset={clearTableSearchState}
         gridProgressActive={sqlBusy}
+        displayedKeysSyncThrottleMs={runtimeConfig.displayed_keys_sync_throttle_ms}
         getRowClass={(row) => {
           if (sqlModeActive) return undefined
           const classes: string[] = []
@@ -4240,6 +4310,7 @@ function App() {
         gridProgressActive={sqlBusy}
         loading={sqlBusy || sqlModeActive ? false : exportsLoading}
         loadingLabel={exportsData.length > 0 ? 'Refreshing exports…' : 'Loading exports…'}
+        displayedKeysSyncThrottleMs={runtimeConfig.displayed_keys_sync_throttle_ms}
       />
     )
 
@@ -4261,7 +4332,7 @@ function App() {
           <span className="meta-chip">sql: {sqlSearchMode.replace('_', '-')}</span>
           <span className="meta-chip">{githubRuntimeLabel}</span>
           <span className="meta-chip">refreshed: {formatClock(lastRefreshedAt)}</span>
-          <span className="meta-chip">{hasActiveJobs ? 'jobs/dashboard 1s · tables 20s' : previewTab === 'jobs' ? 'jobs 5s · dashboard 8s' : 'idle · dashboard 8s'}</span>
+          <span className="meta-chip">{frontendRefreshLabel}</span>
         </div>
 
         <div className="stats-bar header-stats">

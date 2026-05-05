@@ -32,14 +32,15 @@ from papertorepo.api.schemas import (
     DashboardStats,
     ExportRead,
     HealthRead,
-    SqlColumnSource,
     JobLaunchRead,
     JobQueueSummaryRead,
     JobRead,
     PaperRead,
     PaperSummaryRead,
     RepoRead,
+    RuntimeConfigRead,
     ScopePayload,
+    SqlColumnSource,
     SqlCancelResponse,
     SqlRequest,
     SqlResponse,
@@ -57,6 +58,14 @@ logger = logging.getLogger(__name__)
 SQL_CANCEL_TIMEOUT_SECONDS = 2.0
 _sql_running_requests_lock = Lock()
 _sql_running_requests: dict[str, object | None] = {}
+
+
+def _step_providers() -> dict[str, list[str]]:
+    return {
+        "sync_papers": ["arxiv_listing", "arxiv_catchup", "arxiv_submitted_day", "arxiv_id_list"],
+        "find_repos": ["paper_comment", "paper_abstract", "alphaxiv_api", "alphaxiv_html", "huggingface_api"],
+        "refresh_metadata": ["github_api"],
+    }
 
 
 def _scope_from_query(
@@ -616,17 +625,28 @@ def register_routes(app: FastAPI) -> None:
         return HealthRead(
             app_name=settings.app_name,
             api_prefix=settings.api_prefix,
-            default_categories=settings.default_categories_list,
             database_dialect=dialect_name,
-            sql_search_mode=settings.sql_search_mode,
             queue_mode="serial",
             github_auth_configured=github_auth_configured,
             effective_github_min_interval_seconds=effective_github_min_interval_seconds,
-            step_providers={
-                "sync_papers": ["arxiv_listing", "arxiv_catchup", "arxiv_submitted_day", "arxiv_id_list"],
-                "find_repos": ["paper_comment", "paper_abstract", "alphaxiv_api", "alphaxiv_html", "huggingface_api"],
-                "refresh_metadata": ["github_api"],
-            },
+        )
+
+    @router.get("/runtime-config", response_model=RuntimeConfigRead)
+    def runtime_config() -> RuntimeConfigRead:
+        settings = get_settings()
+        return RuntimeConfigRead(
+            default_categories=settings.default_categories_list,
+            sql_search_mode=settings.sql_search_mode,
+            step_providers=_step_providers(),
+            active_dashboard_poll_ms=settings.frontend_active_dashboard_poll_ms,
+            idle_dashboard_poll_ms=settings.frontend_idle_dashboard_poll_ms,
+            active_jobs_poll_ms=settings.frontend_active_jobs_poll_ms,
+            passive_jobs_poll_ms=settings.frontend_passive_jobs_poll_ms,
+            table_refresh_poll_ms=settings.frontend_table_refresh_poll_ms,
+            paper_batch_size=settings.frontend_paper_batch_size,
+            repo_preview_limit=settings.frontend_repo_preview_limit,
+            job_preview_limit=settings.frontend_job_preview_limit,
+            displayed_keys_sync_throttle_ms=settings.frontend_displayed_keys_sync_throttle_ms,
         )
 
     @router.get("/dashboard", response_model=DashboardStats)

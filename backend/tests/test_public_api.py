@@ -325,7 +325,7 @@ def test_public_paper_detail_returns_full_payload(db_env):
     assert not_found_response.json()["detail"] == "Paper not found"
 
 
-def test_health_reports_serial_queue_runtime_metadata(db_env, monkeypatch):
+def test_health_reports_runtime_status(db_env, monkeypatch):
     monkeypatch.setenv("GITHUB_TOKEN", "")
     monkeypatch.setenv("REFRESH_METADATA_GITHUB_MIN_INTERVAL", "0.5")
     monkeypatch.setenv("SQL_SEARCH_MODE", "read_only")
@@ -337,9 +337,35 @@ def test_health_reports_serial_queue_runtime_metadata(db_env, monkeypatch):
     assert response.status_code == 200
     payload = response.json()
     assert payload["queue_mode"] == "serial"
-    assert payload["sql_search_mode"] == "read_only"
     assert payload["github_auth_configured"] is False
     assert payload["effective_github_min_interval_seconds"] == 60.0
+    assert "default_categories" not in payload
+    assert "sql_search_mode" not in payload
+    assert "step_providers" not in payload
+
+    clear_settings_cache()
+
+
+def test_runtime_config_reports_frontend_bootstrap_config(db_env, monkeypatch):
+    monkeypatch.setenv("SQL_SEARCH_MODE", "read_only")
+    clear_settings_cache()
+
+    with TestClient(create_app()) as client:
+        response = client.get("/api/v1/runtime-config")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["default_categories"] == ["cs.CV"]
+    assert payload["sql_search_mode"] == "read_only"
+    assert payload["active_dashboard_poll_ms"] == 1000
+    assert payload["idle_dashboard_poll_ms"] == 8000
+    assert payload["active_jobs_poll_ms"] == 1000
+    assert payload["passive_jobs_poll_ms"] == 5000
+    assert payload["table_refresh_poll_ms"] == 20000
+    assert payload["paper_batch_size"] == 1000
+    assert payload["repo_preview_limit"] == 10000
+    assert payload["job_preview_limit"] == 500
+    assert payload["displayed_keys_sync_throttle_ms"] == 200
     assert payload["step_providers"]["sync_papers"] == [
         "arxiv_listing",
         "arxiv_catchup",
@@ -354,6 +380,46 @@ def test_health_reports_serial_queue_runtime_metadata(db_env, monkeypatch):
         "huggingface_api",
     ]
     assert payload["step_providers"]["refresh_metadata"] == ["github_api"]
+
+    clear_settings_cache()
+
+
+def test_runtime_config_uses_frontend_runtime_env_overrides(db_env, monkeypatch):
+    monkeypatch.setenv("FRONTEND_ACTIVE_DASHBOARD_POLL_MS", "1100")
+    monkeypatch.setenv("FRONTEND_IDLE_DASHBOARD_POLL_MS", "8100")
+    monkeypatch.setenv("FRONTEND_ACTIVE_JOBS_POLL_MS", "1200")
+    monkeypatch.setenv("FRONTEND_PASSIVE_JOBS_POLL_MS", "5100")
+    monkeypatch.setenv("FRONTEND_TABLE_REFRESH_POLL_MS", "21000")
+    monkeypatch.setenv("FRONTEND_PAPER_BATCH_SIZE", "900")
+    monkeypatch.setenv("FRONTEND_REPO_PREVIEW_LIMIT", "9000")
+    monkeypatch.setenv("FRONTEND_JOB_PREVIEW_LIMIT", "450")
+    monkeypatch.setenv("FRONTEND_DISPLAYED_KEYS_SYNC_THROTTLE_MS", "250")
+    clear_settings_cache()
+
+    with TestClient(create_app()) as client:
+        response = client.get("/api/v1/runtime-config")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["active_dashboard_poll_ms"] == 1100
+    assert payload["idle_dashboard_poll_ms"] == 8100
+    assert payload["active_jobs_poll_ms"] == 1200
+    assert payload["passive_jobs_poll_ms"] == 5100
+    assert payload["table_refresh_poll_ms"] == 21000
+    assert payload["paper_batch_size"] == 900
+    assert payload["repo_preview_limit"] == 9000
+    assert payload["job_preview_limit"] == 450
+    assert payload["displayed_keys_sync_throttle_ms"] == 250
+
+    clear_settings_cache()
+
+
+def test_runtime_config_rejects_non_positive_frontend_runtime_values(db_env, monkeypatch):
+    monkeypatch.setenv("FRONTEND_DISPLAYED_KEYS_SYNC_THROTTLE_MS", "0")
+    clear_settings_cache()
+
+    with pytest.raises(ValueError):
+        create_app()
 
     clear_settings_cache()
 

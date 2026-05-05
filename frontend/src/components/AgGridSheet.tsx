@@ -58,6 +58,7 @@ type AgGridSheetProps<TData extends RowRecord = RowRecord> = {
   progressCurrent?: number
   progressTotal?: number
   loadingSummaryMode?: 'counts' | 'labelOnly'
+  displayedKeysSyncThrottleMs: number
   getRowClass?: (row: TData) => string | undefined
 }
 
@@ -134,7 +135,6 @@ function clampFreezeCount(value: string | number, visibleColumnCount: number) {
 
 const POPUP_VIEWPORT_GUTTER = 12
 const POPUP_MIN_HEIGHT = 180
-const DISPLAYED_KEYS_SYNC_THROTTLE_MS = 200
 
 function sameStringArray(left: string[], right: string[]) {
   if (left.length !== right.length) return false
@@ -274,6 +274,7 @@ export default function AgGridSheet<TData extends RowRecord>({
   progressCurrent,
   progressTotal,
   loadingSummaryMode = 'counts',
+  displayedKeysSyncThrottleMs,
   getRowClass,
 }: AgGridSheetProps<TData>) {
   const apiRef = useRef<GridApi<TData> | null>(null)
@@ -382,8 +383,8 @@ export default function AgGridSheet<TData extends RowRecord>({
         displayedKeysSyncForceRef.current = false
         syncDisplayedKeys(api, { force })
       })
-    }, DISPLAYED_KEYS_SYNC_THROTTLE_MS)
-  }, [syncDisplayedKeys])
+    }, displayedKeysSyncThrottleMs)
+  }, [displayedKeysSyncThrottleMs, syncDisplayedKeys])
 
   function syncColumnControls(api: GridApi<TData>) {
     const columnState = api.getColumnState().filter((item) => columnIds.has(item.colId))

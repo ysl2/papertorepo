@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, PositiveInt
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -60,6 +60,16 @@ class Settings(BaseSettings):
 
     job_queue_worker_poll_seconds: float = 1.0
     job_queue_running_timeout_seconds: int = 1800
+
+    frontend_active_dashboard_poll_ms: PositiveInt = 1000
+    frontend_idle_dashboard_poll_ms: PositiveInt = 8000
+    frontend_active_jobs_poll_ms: PositiveInt = 1000
+    frontend_passive_jobs_poll_ms: PositiveInt = 5000
+    frontend_table_refresh_poll_ms: PositiveInt = 20000
+    frontend_paper_batch_size: PositiveInt = 1000
+    frontend_repo_preview_limit: PositiveInt = 10000
+    frontend_job_preview_limit: PositiveInt = 500
+    frontend_displayed_keys_sync_throttle_ms: PositiveInt = 200
 
     public_export_downloads: bool = True
     cors_origins: list[str] = Field(default_factory=lambda: ["*"])

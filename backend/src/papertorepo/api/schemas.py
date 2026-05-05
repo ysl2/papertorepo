@@ -17,13 +17,25 @@ CATEGORIES_FORMAT_ERROR = "Enter categories as comma-separated arXiv fields, e.g
 class HealthRead(BaseModel):
     app_name: str
     api_prefix: str
-    default_categories: list[str]
     database_dialect: str
-    sql_search_mode: Literal["off", "read_only", "read_write"]
     queue_mode: Literal["serial"]
     github_auth_configured: bool
     effective_github_min_interval_seconds: float
+
+
+class RuntimeConfigRead(BaseModel):
+    default_categories: list[str]
+    sql_search_mode: Literal["off", "read_only", "read_write"]
     step_providers: dict[str, list[str]]
+    active_dashboard_poll_ms: int
+    idle_dashboard_poll_ms: int
+    active_jobs_poll_ms: int
+    passive_jobs_poll_ms: int
+    table_refresh_poll_ms: int
+    paper_batch_size: int
+    repo_preview_limit: int
+    job_preview_limit: int
+    displayed_keys_sync_throttle_ms: int
 
 
 class ScopePayload(BaseModel):
