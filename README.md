@@ -17,21 +17,29 @@ The current system is intentionally simple:
 
 ## Structure
 
-The backend uses a single installable Python package under `src/`:
+This repository is organized as a small monorepo:
 
 ```text
-src/papertorepo/
-  api/
-  core/
-  db/
-  jobs/
-  providers/
-  services/
-  storage/
+backend/
+  src/papertorepo/
+  tests/
+  alembic/
+  pyproject.toml
+frontend/
+  src/
+  public/
+  package.json
+docs/
 ```
 
-The frontend lives in `frontend/`.
-Database migrations stay in the root `alembic/` directory.
+The repo root contains shared orchestration, documentation, and runtime configuration:
+
+- `Dockerfile`
+- `docker-compose.yml`
+- `.env.example`
+- `README.md`
+
+The root `.env` is the single project-level environment file. Backend settings search upward for it, so local commands can be run from `backend/` while still using the root `.env`.
 
 ## Runtime model
 
@@ -70,15 +78,24 @@ docker compose exec app uv run papertorepo export --categories cs.CV --month 202
 ### Local workflow
 
 ```bash
-uv sync --dev
 cp .env.example .env
+cd backend
+uv sync --dev
 uv run papertorepo serve
 ```
 
 Start the worker in another terminal:
 
 ```bash
+cd backend
 uv run papertorepo worker
+```
+
+Run the frontend dev server in another terminal:
+
+```bash
+npm --prefix frontend install
+npm --prefix frontend run dev
 ```
 
 ## Environment
@@ -118,7 +135,11 @@ JOB_QUEUE_RUNNING_TIMEOUT_SECONDS=1800
 ## Testing
 
 ```bash
+cd backend
 uv sync --dev
 uv run pytest
-cd frontend && npm ci && npm run build
+
+cd ..
+npm --prefix frontend ci
+npm --prefix frontend run build
 ```

@@ -13,12 +13,14 @@ RUN npm install
 RUN npm run build
 
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS runtime
-WORKDIR /app
-COPY pyproject.toml uv.lock README.md main.py .env.example alembic.ini ./
-COPY alembic ./alembic
-COPY src ./src
+WORKDIR /app/backend
+COPY README.md /app/README.md
+COPY .env.example /app/.env.example
+COPY backend/pyproject.toml backend/uv.lock backend/main.py backend/alembic.ini ./
+COPY backend/alembic ./alembic
+COPY backend/src ./src
 RUN uv sync --frozen --no-dev
-COPY --from=frontend-build /app/frontend/dist ./frontend/dist
-ENV PATH="/app/.venv/bin:${PATH}"
+COPY --from=frontend-build /app/frontend/dist /app/frontend/dist
+ENV PATH="/app/backend/.venv/bin:${PATH}"
 EXPOSE 8000
 CMD ["sh", "-lc", "uv run papertorepo migrate && uv run papertorepo serve --host 0.0.0.0 --port 8000"]

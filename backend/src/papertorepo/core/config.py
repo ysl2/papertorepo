@@ -8,8 +8,21 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def find_env_file(start: Path | None = None) -> str | None:
+    current = (start or Path.cwd()).resolve()
+    for path in (current, *current.parents):
+        candidate = path / ".env"
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def default_frontend_dist_dir() -> Path:
+    return Path(__file__).resolve().parents[4] / "frontend" / "dist"
+
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(env_file_encoding="utf-8", extra="ignore")
 
     app_name: str = "papertorepo"
     api_prefix: str = "/api/v1"
@@ -18,7 +31,7 @@ class Settings(BaseSettings):
     data_dir: Path = Path("data")
     raw_fetch_dir_name: str = "raw"
     export_dir_name: str = "exports"
-    frontend_dist_dir: Path = Path("frontend/dist")
+    frontend_dist_dir: Path = Field(default_factory=default_frontend_dist_dir)
     sql_search_mode: Literal["off", "read_only", "read_write"] = "off"
 
     default_categories: str = "cs.CV"
@@ -66,7 +79,10 @@ class Settings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    return Settings()
+    env_file = find_env_file()
+    if env_file is None:
+        return Settings()
+    return Settings(_env_file=env_file)
 
 
 def clear_settings_cache() -> None:

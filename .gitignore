@@ -1,6 +1,8 @@
 __pycache__/
 .pytest_cache/
 .venv/
+backend/.pytest_cache/
+backend/.venv/
 .env
 data/
 runtime-data/
