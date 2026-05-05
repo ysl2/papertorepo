@@ -621,9 +621,9 @@ export default function AgGridSheet<TData extends RowRecord>({
           </div>
         ) : null}
 
-        {toolbarSummary ? <div className="sheet-grid-toolbar-slot sheet-grid-toolbar-summary">{toolbarSummary}</div> : null}
-
         {toolbarMessage ? <div className="sheet-grid-toolbar-slot sheet-grid-toolbar-message">{toolbarMessage}</div> : null}
+
+        {toolbarSummary ? <div className="sheet-grid-toolbar-slot sheet-grid-toolbar-summary">{toolbarSummary}</div> : null}
 
         {toolbarAfterSummary ? <div className="sheet-grid-toolbar-slot sheet-grid-toolbar-export-slot">{toolbarAfterSummary}</div> : null}
       </div>

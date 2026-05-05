@@ -10,6 +10,7 @@ from papertorepo.api.routes import (
     _cancel_sql_request,
     _execute_driver_sql,
     _register_sql_request,
+    _sql_exec_driver_sql_options,
     _sql_column_sources_from_pgresult,
     _unregister_sql_request,
 )
@@ -262,6 +263,62 @@ def test_sql_datetime_columns_serialized_as_strings(db_env):
     assert body["ok"] is True
     row = body["rows"][0]
     assert isinstance(row["published_at"], str)
+
+
+def test_postgresql_exec_driver_sql_uses_no_params_for_literal_percent_sql():
+    assert _sql_exec_driver_sql_options("postgresql") == {"no_parameters": True}
+    assert _sql_exec_driver_sql_options("sqlite") is None
+
+
+class FakeSqlResult:
+    returns_rows = False
+    cursor = None
+
+
+class FakeSqlConnection:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, bool] | None]] = []
+
+    def exec_driver_sql(self, query: str, *, execution_options: dict[str, bool] | None = None):
+        self.calls.append((query, execution_options))
+        return FakeSqlResult()
+
+
+class FakeSqlBind:
+    class Dialect:
+        name = "postgresql"
+
+    dialect = Dialect()
+
+
+class FakeSqlSession:
+    bind = FakeSqlBind()
+
+    def __init__(self) -> None:
+        self.connection_obj = FakeSqlConnection()
+        self.rolled_back = False
+
+    def connection(self) -> FakeSqlConnection:
+        return self.connection_obj
+
+    def rollback(self) -> None:
+        self.rolled_back = True
+
+
+def test_read_only_postgresql_executes_literal_percent_sql_without_driver_params(monkeypatch):
+    from papertorepo.api import routes
+
+    db = FakeSqlSession()
+    monkeypatch.setattr(routes, "_driver_connection_from_session", lambda _db: object())
+
+    response = routes._execute_read_only_sql(db, "SELECT '%point cloud%'")
+
+    assert response.ok is True
+    assert db.connection_obj.calls == [
+        ("SET TRANSACTION READ ONLY", None),
+        ("SELECT '%point cloud%'", {"no_parameters": True}),
+    ]
+    assert db.rolled_back is True
 
 
 class FakeSqlCursor:

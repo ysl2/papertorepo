@@ -239,6 +239,11 @@ type SqlResult = {
 type SearchMode = 'idle' | 'quick' | 'sql'
 type SearchInputMode = 'search' | 'sql'
 type SqlRunState = 'idle' | 'running' | 'canceling'
+type SqlFeedbackStatus = 'success' | 'failure' | 'cancelled'
+type SqlFeedback = {
+  status: SqlFeedbackStatus
+  message: string
+}
 type DetailKind = 'paper' | 'job' | 'export'
 type SqlSourceTable = 'papers' | 'jobs' | 'exports'
 type SqlEntityTarget = { kind: DetailKind; id: string }
@@ -1209,6 +1214,28 @@ function ChevronRightIcon() {
   )
 }
 
+function SqlStatusIcon({ status }: { status: SqlFeedbackStatus }) {
+  if (status === 'success') {
+    return (
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M3.5 8.25 6.6 11.2 12.7 4.8" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+      </svg>
+    )
+  }
+  if (status === 'cancelled') {
+    return (
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M4.5 8h7" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
+      </svg>
+    )
+  }
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true">
+      <path d="m4.75 4.75 6.5 6.5M11.25 4.75l-6.5 6.5" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.9" />
+    </svg>
+  )
+}
+
 function suppressInteractiveCellMouseHandling() {
   return true
 }
@@ -1702,7 +1729,7 @@ function App() {
   const [searchInputMode, setSearchInputMode] = useState<SearchInputMode>(() => loadSavedSearchInputMode())
   const [sqlRunState, setSqlRunState] = useState<SqlRunState>('idle')
   const [sqlResult, setSqlResult] = useState<SqlResult | null>(null)
-  const [sqlFeedbackMessage, setSqlFeedbackMessage] = useState<string | null>(null)
+  const [sqlFeedback, setSqlFeedback] = useState<SqlFeedback | null>(null)
   const [selectedPaperId, setSelectedPaperId] = useState<string | null>(null)
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null)
   const [selectedExportId, setSelectedExportId] = useState<string | null>(null)
@@ -1828,11 +1855,11 @@ function App() {
   }, [runtimeConfig])
 
   const clearSqlFeedback = useCallback(() => {
-    setSqlFeedbackMessage(null)
+    setSqlFeedback(null)
   }, [])
 
-  const showSqlFeedback = useCallback((message: string) => {
-    setSqlFeedbackMessage(message)
+  const showSqlFeedback = useCallback((status: SqlFeedbackStatus, message: string) => {
+    setSqlFeedback({ status, message })
   }, [])
 
   const ignoreSelectedKeyChange = useCallback((key: string | null) => {
@@ -1864,13 +1891,13 @@ function App() {
         })
         if (!showFeedback) return
         if (response.ok) {
-          showSqlFeedback('Canceled')
+          showSqlFeedback('cancelled', 'Canceled')
         } else {
-          showSqlFeedback(response.message || 'Cancel requested, but backend cancel could not be confirmed')
+          showSqlFeedback('failure', response.message || 'Cancel requested, but backend cancel could not be confirmed')
         }
       } catch {
         if (showFeedback) {
-          showSqlFeedback('Cancel requested, but backend cancel could not be confirmed')
+          showSqlFeedback('failure', 'Cancel requested, but backend cancel could not be confirmed')
         }
       } finally {
         if (activeSqlRequestIdRef.current === null) {
@@ -1969,6 +1996,7 @@ function App() {
           setSelectedJobChildren([])
           setSelectedJobAttempts([])
           setSelectedExportLoading(false)
+          showSqlFeedback('success', `SQL returned ${response.row_count.toLocaleString()} rows.`)
           return
         }
 
@@ -1978,7 +2006,9 @@ function App() {
         if (response.ok) {
           setSqlResult(emptySqlResult(response.message))
           if (response.message) {
-            showSqlFeedback(response.message)
+            showSqlFeedback('success', response.message)
+          } else {
+            showSqlFeedback('success', 'Statement executed')
           }
           setSummaryRefreshTick((value) => value + 1)
           setJobsRefreshTick((value) => value + 1)
@@ -1987,13 +2017,13 @@ function App() {
         }
 
         setSqlResult(emptySqlResult(response.message))
-        showSqlFeedback(response.message || 'SQL execution failed')
+        showSqlFeedback('failure', response.message || 'SQL execution failed')
       } catch (err) {
         if (isAbortError(err) || activeSqlRequestIdRef.current !== requestId) return
         if (!isAbortError(err) && err instanceof Error) {
           setSearchMode('sql')
           setSqlResult(emptySqlResult(err.message))
-          showSqlFeedback(err.message)
+          showSqlFeedback('failure', err.message)
         }
       } finally {
         if (activeSqlRequestIdRef.current === requestId) {
@@ -4150,7 +4180,21 @@ function App() {
     </span>
   )
 
-  const sheetToolbarMessage = sqlFeedbackMessage ? <span className="sheet-feedback-chip" title={sqlFeedbackMessage}>{sqlFeedbackMessage}</span> : null
+  const sheetToolbarMessage = sqlFeedback ? (
+    <HoverTooltip
+      content={<pre className="sql-feedback-tooltip">{sqlFeedback.message}</pre>}
+      showDelayMs={runtimeConfig?.tooltip_show_delay_ms}
+    >
+      <span
+        className={`sheet-feedback-chip ${sqlFeedback.status}`}
+        aria-label={`SQL ${sqlFeedback.status}: ${sqlFeedback.message}`}
+        role="status"
+        tabIndex={0}
+      >
+        <SqlStatusIcon status={sqlFeedback.status} />
+      </span>
+    </HoverTooltip>
+  ) : null
 
   const sheetToolbarActions = (
     <button

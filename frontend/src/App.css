@@ -1070,18 +1070,51 @@ summary:focus {
 .sheet-feedback-chip {
   display: inline-flex;
   align-items: center;
-  max-width: min(360px, 24vw);
-  min-height: 28px;
-  padding: 0 10px;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: 50%;
   color: var(--ink);
   background: var(--surface);
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+}
+
+.sheet-feedback-chip svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+.sheet-feedback-chip.success {
+  border-color: rgba(26, 91, 71, 0.28);
+  background: #edf8f3;
+  color: #1a5b47;
+}
+
+.sheet-feedback-chip.failure {
+  border-color: rgba(138, 63, 42, 0.28);
+  background: #fff3ef;
+  color: #8a3f2a;
+}
+
+.sheet-feedback-chip.cancelled {
+  border-color: rgba(85, 100, 94, 0.26);
+  background: #f4f5f2;
+  color: #55645e;
+}
+
+.sql-feedback-tooltip {
+  max-width: min(720px, calc(100vw - 32px));
+  max-height: min(360px, calc(100vh - 32px));
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.45;
 }
 
 .sheet-frame {
@@ -1465,6 +1498,11 @@ summary:focus {
   letter-spacing: 0.01em;
   box-shadow: 0 14px 32px rgba(12, 18, 15, 0.22);
   white-space: normal;
+}
+
+.hover-tooltip-surface:has(.sql-feedback-tooltip) {
+  max-width: min(720px, calc(100vw - 32px));
+  padding: 8px 10px;
 }
 
 .ag-theme-balham input.ag-text-field-input::placeholder,

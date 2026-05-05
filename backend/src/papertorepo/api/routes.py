@@ -350,6 +350,12 @@ def _sql_status_message(cursor: object) -> str | None:
     return None
 
 
+def _sql_exec_driver_sql_options(dialect_name: str | None) -> dict[str, bool] | None:
+    if dialect_name == "postgresql":
+        return {"no_parameters": True}
+    return None
+
+
 def _sql_response_from_cursor(cursor: object, raw_connection: object | None = None) -> SqlResponse:
     has_result_set = False
     columns: list[str] = []
@@ -500,7 +506,7 @@ def _execute_read_only_sql(db: Session, query: str, request_id: str | None = Non
         elif dialect_name == "sqlite":
             cursor = raw_connection.cursor()
             cursor.execute("PRAGMA query_only = ON")
-        result = connection.exec_driver_sql(query)
+        result = connection.exec_driver_sql(query, execution_options=_sql_exec_driver_sql_options(dialect_name))
         if result.returns_rows:
             columns = (
                 _sql_column_names(result.cursor.description)
