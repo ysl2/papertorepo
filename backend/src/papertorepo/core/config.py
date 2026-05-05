@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import Field, PositiveInt
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, PositiveInt, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 def find_env_file(start: Path | None = None) -> str | None:
@@ -55,7 +55,9 @@ class Settings(BaseSettings):
     find_repos_alphaxiv_max_concurrent: int = 4
 
     refresh_metadata_github_min_interval: float = 0.2
+    refresh_metadata_github_anonymous_min_interval: float = 60.0
     refresh_metadata_github_graphql_batch_size: int = 50
+    refresh_metadata_github_graphql_max_concurrent: PositiveInt = 1
     refresh_metadata_github_rest_fallback_max_concurrent: int = 2
 
     job_queue_worker_poll_seconds: float = 1.0
@@ -71,9 +73,18 @@ class Settings(BaseSettings):
     frontend_job_preview_limit: PositiveInt = 500
     frontend_displayed_keys_sync_throttle_ms: PositiveInt = 200
     frontend_tooltip_show_delay_ms: PositiveInt = 200
+    frontend_copy_feedback_ms: PositiveInt = 500
+    frontend_launch_feedback_ms: PositiveInt = 3000
 
     public_export_downloads: bool = True
-    cors_origins: list[str] = Field(default_factory=lambda: ["*"])
+    cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["*"])
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def parse_cors_origins(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
 
     @property
     def raw_fetch_dir(self) -> Path:

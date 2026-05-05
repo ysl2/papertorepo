@@ -47,7 +47,6 @@ from papertorepo.api.schemas import (
 )
 from papertorepo.core.scope import build_scope_json
 from papertorepo.services.pipeline import (
-    REFRESH_METADATA_GITHUB_ANONYMOUS_REST_MIN_INTERVAL_SECONDS,
     get_dashboard_stats,
     get_job_queue_snapshot,
     scoped_papers,
@@ -619,7 +618,7 @@ def register_routes(app: FastAPI) -> None:
             if github_auth_configured
             else max(
                 settings.refresh_metadata_github_min_interval,
-                REFRESH_METADATA_GITHUB_ANONYMOUS_REST_MIN_INTERVAL_SECONDS,
+                settings.refresh_metadata_github_anonymous_min_interval,
             )
         )
         return HealthRead(
@@ -648,6 +647,8 @@ def register_routes(app: FastAPI) -> None:
             job_preview_limit=settings.frontend_job_preview_limit,
             displayed_keys_sync_throttle_ms=settings.frontend_displayed_keys_sync_throttle_ms,
             tooltip_show_delay_ms=settings.frontend_tooltip_show_delay_ms,
+            copy_feedback_ms=settings.frontend_copy_feedback_ms,
+            launch_feedback_ms=settings.frontend_launch_feedback_ms,
         )
 
     @router.get("/dashboard", response_model=DashboardStats)

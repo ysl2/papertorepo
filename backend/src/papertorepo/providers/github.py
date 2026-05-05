@@ -10,9 +10,6 @@ from papertorepo.core.http import RateLimiter, request_text
 from papertorepo.core.normalize.github import extract_owner_repo, normalize_github_url
 
 
-REFRESH_METADATA_GITHUB_ANONYMOUS_REST_MIN_INTERVAL_SECONDS = 60.0
-
-
 class GitHubClient:
     def __init__(
         self,
@@ -33,7 +30,7 @@ class GitHubClient:
         self.rate_limiter = RateLimiter(
             effective_min_interval
             if github_token.strip()
-            else max(effective_min_interval, REFRESH_METADATA_GITHUB_ANONYMOUS_REST_MIN_INTERVAL_SECONDS)
+            else max(effective_min_interval, settings.refresh_metadata_github_anonymous_min_interval)
         )
 
     async def fetch_repo_metadata(self, github_url: str) -> tuple[GitHubRepoMetadata | None, str | None]:

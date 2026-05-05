@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from papertorepo.api.app import app, create_app
-from papertorepo.core.config import clear_settings_cache
+from papertorepo.core.config import clear_settings_cache, get_settings
 from papertorepo.db.session import session_scope
 from papertorepo.db.models import (
     ExportRecord,
@@ -328,6 +328,7 @@ def test_public_paper_detail_returns_full_payload(db_env):
 def test_health_reports_runtime_status(db_env, monkeypatch):
     monkeypatch.setenv("GITHUB_TOKEN", "")
     monkeypatch.setenv("REFRESH_METADATA_GITHUB_MIN_INTERVAL", "0.5")
+    monkeypatch.setenv("REFRESH_METADATA_GITHUB_ANONYMOUS_MIN_INTERVAL", "1.5")
     monkeypatch.setenv("SQL_SEARCH_MODE", "read_only")
     clear_settings_cache()
 
@@ -338,7 +339,7 @@ def test_health_reports_runtime_status(db_env, monkeypatch):
     payload = response.json()
     assert payload["queue_mode"] == "serial"
     assert payload["github_auth_configured"] is False
-    assert payload["effective_github_min_interval_seconds"] == 60.0
+    assert payload["effective_github_min_interval_seconds"] == 1.5
     assert "default_categories" not in payload
     assert "sql_search_mode" not in payload
     assert "step_providers" not in payload
@@ -367,6 +368,8 @@ def test_runtime_config_reports_frontend_bootstrap_config(db_env, monkeypatch):
     assert payload["job_preview_limit"] == 500
     assert payload["displayed_keys_sync_throttle_ms"] == 200
     assert payload["tooltip_show_delay_ms"] == 200
+    assert payload["copy_feedback_ms"] == 500
+    assert payload["launch_feedback_ms"] == 3000
     assert payload["step_providers"]["sync_papers"] == [
         "arxiv_listing",
         "arxiv_catchup",
@@ -396,6 +399,8 @@ def test_runtime_config_uses_frontend_runtime_env_overrides(db_env, monkeypatch)
     monkeypatch.setenv("FRONTEND_JOB_PREVIEW_LIMIT", "450")
     monkeypatch.setenv("FRONTEND_DISPLAYED_KEYS_SYNC_THROTTLE_MS", "250")
     monkeypatch.setenv("FRONTEND_TOOLTIP_SHOW_DELAY_MS", "175")
+    monkeypatch.setenv("FRONTEND_COPY_FEEDBACK_MS", "650")
+    monkeypatch.setenv("FRONTEND_LAUNCH_FEEDBACK_MS", "2750")
     clear_settings_cache()
 
     with TestClient(create_app()) as client:
@@ -413,12 +418,19 @@ def test_runtime_config_uses_frontend_runtime_env_overrides(db_env, monkeypatch)
     assert payload["job_preview_limit"] == 450
     assert payload["displayed_keys_sync_throttle_ms"] == 250
     assert payload["tooltip_show_delay_ms"] == 175
+    assert payload["copy_feedback_ms"] == 650
+    assert payload["launch_feedback_ms"] == 2750
 
     clear_settings_cache()
 
 
 def test_runtime_config_rejects_non_positive_frontend_runtime_values(db_env, monkeypatch):
-    for env_name in ("FRONTEND_DISPLAYED_KEYS_SYNC_THROTTLE_MS", "FRONTEND_TOOLTIP_SHOW_DELAY_MS"):
+    for env_name in (
+        "FRONTEND_DISPLAYED_KEYS_SYNC_THROTTLE_MS",
+        "FRONTEND_TOOLTIP_SHOW_DELAY_MS",
+        "FRONTEND_COPY_FEEDBACK_MS",
+        "FRONTEND_LAUNCH_FEEDBACK_MS",
+    ):
         monkeypatch.setenv(env_name, "0")
         clear_settings_cache()
 
@@ -427,6 +439,30 @@ def test_runtime_config_rejects_non_positive_frontend_runtime_values(db_env, mon
 
         monkeypatch.delenv(env_name)
         clear_settings_cache()
+
+
+def test_settings_parses_cors_origins_from_env(db_env, monkeypatch):
+    monkeypatch.setenv("CORS_ORIGINS", "http://localhost:5173, https://example.com")
+    clear_settings_cache()
+    assert get_settings().cors_origins == ["http://localhost:5173", "https://example.com"]
+
+    monkeypatch.setenv("CORS_ORIGINS", "*")
+    clear_settings_cache()
+    assert get_settings().cors_origins == ["*"]
+
+    clear_settings_cache()
+
+
+def test_settings_uses_refresh_metadata_runtime_env_overrides(db_env, monkeypatch):
+    monkeypatch.setenv("REFRESH_METADATA_GITHUB_ANONYMOUS_MIN_INTERVAL", "5.0")
+    monkeypatch.setenv("REFRESH_METADATA_GITHUB_GRAPHQL_MAX_CONCURRENT", "3")
+    clear_settings_cache()
+
+    settings = get_settings()
+    assert settings.refresh_metadata_github_anonymous_min_interval == 5.0
+    assert settings.refresh_metadata_github_graphql_max_concurrent == 3
+
+    clear_settings_cache()
 
 
 def _create_app_with_test_frontend_dist(dist_dir, monkeypatch):

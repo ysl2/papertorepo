@@ -34,7 +34,6 @@ from papertorepo.providers.huggingface_links import (
     HuggingFaceLinksClient,
     extract_github_url_from_hf_payload,
 )
-from papertorepo.providers.github import REFRESH_METADATA_GITHUB_ANONYMOUS_REST_MIN_INTERVAL_SECONDS
 from papertorepo.storage.raw_fetch_store import RawCacheStore
 from papertorepo.core.config import get_settings
 from papertorepo.jobs.batches import is_batch_root_job
@@ -71,7 +70,6 @@ from papertorepo.core.scope import (
 SYNC_PAPERS_ARXIV_CATCHUP_MAX_AGE_DAYS = 90
 SYNC_PAPERS_ARXIV_MAX_CONCURRENT = 1
 SYNC_PAPERS_ARXIV_LIST_ABS_LINK_PATTERN = re.compile(r'href\s*=\s*"/abs/([^"#?]+)"', re.IGNORECASE)
-REFRESH_METADATA_GITHUB_GRAPHQL_MAX_CONCURRENT = 1
 REFRESH_METADATA_GITHUB_GRAPHQL_TOPICS_FIRST = 1
 RESUME_ITEM_STATUS_COMPLETED = "completed"
 RESUME_ITEM_KIND_PAPER = "paper"
@@ -2352,7 +2350,7 @@ async def run_refresh_metadata(
         if settings.github_token.strip()
         else max(
             settings.refresh_metadata_github_min_interval,
-            REFRESH_METADATA_GITHUB_ANONYMOUS_REST_MIN_INTERVAL_SECONDS,
+            settings.refresh_metadata_github_anonymous_min_interval,
         )
     )
     rest_limiter = RateLimiter(min_interval)
@@ -2360,7 +2358,7 @@ async def run_refresh_metadata(
 
     async with aiohttp.ClientSession(timeout=build_timeout()) as session:
         rest_semaphore = asyncio.Semaphore(max(1, settings.refresh_metadata_github_rest_fallback_max_concurrent))
-        graphql_semaphore = asyncio.Semaphore(REFRESH_METADATA_GITHUB_GRAPHQL_MAX_CONCURRENT)
+        graphql_semaphore = asyncio.Semaphore(settings.refresh_metadata_github_graphql_max_concurrent)
         fallback_urls: list[str] = []
 
         sorted_urls = sorted(repo_urls_to_process)

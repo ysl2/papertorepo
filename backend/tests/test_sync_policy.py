@@ -618,8 +618,8 @@ async def test_refresh_metadata_refreshes_dynamic_fields_but_keeps_created_at(db
 async def test_refresh_metadata_repair_reuses_completed_repo_items(db_env, monkeypatch):
     monkeypatch.setenv("GITHUB_TOKEN", "")
     monkeypatch.setenv("REFRESH_METADATA_GITHUB_MIN_INTERVAL", "0")
+    monkeypatch.setenv("REFRESH_METADATA_GITHUB_ANONYMOUS_MIN_INTERVAL", "0")
     clear_settings_cache()
-    monkeypatch.setattr("papertorepo.services.pipeline.REFRESH_METADATA_GITHUB_ANONYMOUS_REST_MIN_INTERVAL_SECONDS", 0.0)
     _insert_paper("2604.02001", date(2026, 4, 1))
     _insert_paper("2604.02002", date(2026, 4, 2))
     with session_scope() as db:
@@ -707,8 +707,8 @@ async def test_refresh_metadata_repair_reuses_completed_repo_items(db_env, monke
 async def test_refresh_metadata_force_repair_does_not_reuse_completed_repo_items(db_env, monkeypatch):
     monkeypatch.setenv("GITHUB_TOKEN", "")
     monkeypatch.setenv("REFRESH_METADATA_GITHUB_MIN_INTERVAL", "0")
+    monkeypatch.setenv("REFRESH_METADATA_GITHUB_ANONYMOUS_MIN_INTERVAL", "0")
     clear_settings_cache()
-    monkeypatch.setattr("papertorepo.services.pipeline.REFRESH_METADATA_GITHUB_ANONYMOUS_REST_MIN_INTERVAL_SECONDS", 0.0)
     _insert_paper("2604.02501", date(2026, 4, 1))
     with session_scope() as db:
         db.add(
@@ -773,8 +773,8 @@ async def test_refresh_metadata_force_repair_does_not_reuse_completed_repo_items
 async def test_refresh_metadata_deletes_stale_metadata_when_github_returns_missing(db_env, monkeypatch):
     monkeypatch.setenv("GITHUB_TOKEN", "")
     monkeypatch.setenv("REFRESH_METADATA_GITHUB_MIN_INTERVAL", "0")
+    monkeypatch.setenv("REFRESH_METADATA_GITHUB_ANONYMOUS_MIN_INTERVAL", "0")
     clear_settings_cache()
-    monkeypatch.setattr("papertorepo.services.pipeline.REFRESH_METADATA_GITHUB_ANONYMOUS_REST_MIN_INTERVAL_SECONDS", 0.0)
     _insert_paper("2604.02601", date(2026, 4, 1))
     with session_scope() as db:
         db.add(

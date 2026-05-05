@@ -54,6 +54,8 @@ type RuntimeConfig = {
   job_preview_limit: number
   displayed_keys_sync_throttle_ms: number
   tooltip_show_delay_ms: number
+  copy_feedback_ms: number
+  launch_feedback_ms: number
 }
 
 type Job = {
@@ -322,7 +324,6 @@ const DATE_PATTERN = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/
 const ARXIV_CATEGORY_PATTERN = /^[a-z]+(?:-[a-z]+)*(?:\.[A-Za-z-]+)?$/
 const CATEGORIES_HINT = 'cs.CV, cs.LG'
 const RANGE_ORDER_HINT = 'From ≤ To'
-const COPY_FEEDBACK_MS = 500
 const SQL_SEARCH_MODE_STORAGE_KEY = 'papertorepo:sql-search-input-mode:v1'
 const SQL_SEARCH_PLACEHOLDER = 'Enter SQL...'
 const QUICK_SEARCH_PLACEHOLDER = 'Search...'
@@ -1815,6 +1816,7 @@ function App() {
   const filteredPaperExportReady = previewTab === 'papers' && filteredPaperIds.length > 0
 
   const showCopyFeedback = useCallback((message: string) => {
+    if (!runtimeConfig) return
     if (copyFeedbackTimeoutRef.current !== null) {
       window.clearTimeout(copyFeedbackTimeoutRef.current)
     }
@@ -1822,8 +1824,8 @@ function App() {
     copyFeedbackTimeoutRef.current = window.setTimeout(() => {
       setCopyFeedback(null)
       copyFeedbackTimeoutRef.current = null
-    }, COPY_FEEDBACK_MS)
-  }, [])
+    }, runtimeConfig.copy_feedback_ms)
+  }, [runtimeConfig])
 
   const clearSqlFeedback = useCallback(() => {
     setSqlFeedbackMessage(null)
@@ -2560,6 +2562,11 @@ function App() {
   }, [drawerOpen, previewTab, selectedExportId, selectedJobId, selectedPaperId])
 
   async function launchJob(jobType: StepJob) {
+    if (!runtimeConfig) {
+      setError('Runtime config is still loading.')
+      return
+    }
+
     if (jobType !== 'export' && liveScope.error) {
       setError('Fix the scope error before starting a task.')
       return
@@ -2623,7 +2630,7 @@ function App() {
       queueHandoffTimeoutRef.current = window.setTimeout(() => {
         setLaunchFeedback(null)
         queueHandoffTimeoutRef.current = null
-      }, 3000)
+      }, runtimeConfig.launch_feedback_ms)
       setSummaryRefreshTick((value) => value + 1)
       setJobsRefreshTick((value) => value + 1)
       setTableRefreshTick((value) => value + 1)
