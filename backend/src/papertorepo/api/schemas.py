@@ -36,6 +36,7 @@ class RuntimeConfigRead(BaseModel):
     repo_preview_limit: int
     job_preview_limit: int
     displayed_keys_sync_throttle_ms: int
+    tooltip_show_delay_ms: int
 
 
 class ScopePayload(BaseModel):

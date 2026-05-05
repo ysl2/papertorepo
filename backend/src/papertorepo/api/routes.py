@@ -647,6 +647,7 @@ def register_routes(app: FastAPI) -> None:
             repo_preview_limit=settings.frontend_repo_preview_limit,
             job_preview_limit=settings.frontend_job_preview_limit,
             displayed_keys_sync_throttle_ms=settings.frontend_displayed_keys_sync_throttle_ms,
+            tooltip_show_delay_ms=settings.frontend_tooltip_show_delay_ms,
         )
 
     @router.get("/dashboard", response_model=DashboardStats)

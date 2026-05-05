@@ -59,6 +59,7 @@ type AgGridSheetProps<TData extends RowRecord = RowRecord> = {
   progressTotal?: number
   loadingSummaryMode?: 'counts' | 'labelOnly'
   displayedKeysSyncThrottleMs: number
+  tooltipShowDelayMs: number
   getRowClass?: (row: TData) => string | undefined
 }
 
@@ -275,6 +276,7 @@ export default function AgGridSheet<TData extends RowRecord>({
   progressTotal,
   loadingSummaryMode = 'counts',
   displayedKeysSyncThrottleMs,
+  tooltipShowDelayMs,
   getRowClass,
 }: AgGridSheetProps<TData>) {
   const apiRef = useRef<GridApi<TData> | null>(null)
@@ -330,9 +332,10 @@ export default function AgGridSheet<TData extends RowRecord>({
       filter: compactTextColumnFilter,
       filterParams: compactTextFilterParams,
       headerComponent: SheetHeader,
+      headerComponentParams: { tooltipShowDelayMs },
       minWidth: 140,
     }),
-    [],
+    [tooltipShowDelayMs],
   )
 
   useEffect(() => {

@@ -12,7 +12,7 @@ type HoverTooltipProps = {
   content: ReactNode | null | undefined
   children: ReactNode
   anchorClassName?: string
-  delayMs?: number
+  showDelayMs?: number
 }
 
 type TooltipPosition = {
@@ -20,7 +20,7 @@ type TooltipPosition = {
   top: number
 }
 
-const DEFAULT_DELAY_MS = 200
+const DEFAULT_TOOLTIP_SHOW_DELAY_MS = 200
 const TOOLTIP_OFFSET_PX = 10
 const TOOLTIP_VIEWPORT_GUTTER_PX = 10
 
@@ -38,7 +38,7 @@ export default function HoverTooltip({
   content,
   children,
   anchorClassName,
-  delayMs = DEFAULT_DELAY_MS,
+  showDelayMs = DEFAULT_TOOLTIP_SHOW_DELAY_MS,
 }: HoverTooltipProps) {
   const tooltipId = useId()
   const anchorRef = useRef<HTMLSpanElement | null>(null)
@@ -112,7 +112,7 @@ export default function HoverTooltip({
     showTimerRef.current = window.setTimeout(() => {
       showTimerRef.current = null
       setVisible(true)
-    }, delayMs)
+    }, showDelayMs)
   }
 
   function hideTooltip() {

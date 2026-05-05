@@ -2,6 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import type { IHeaderParams, SortDirection } from 'ag-grid-community'
 import HoverTooltip from './HoverTooltip'
 
+type SheetHeaderParams = IHeaderParams & {
+  tooltipShowDelayMs?: number
+}
+
 type HeaderState = {
   filterActive: boolean
   sort: SortDirection | undefined
@@ -53,7 +57,7 @@ function FilterIcon() {
   )
 }
 
-export default function SheetHeader(params: IHeaderParams) {
+export default function SheetHeader(params: SheetHeaderParams) {
   const filterButtonRef = useRef<HTMLButtonElement | null>(null)
   const [state, setState] = useState<HeaderState>(() => readHeaderState(params))
   const [isFilterPopupOpen, setIsFilterPopupOpen] = useState(() => readFilterPopupOpenState(params))
@@ -87,13 +91,17 @@ export default function SheetHeader(params: IHeaderParams) {
 
   return (
     <div className="sheet-header">
-      <HoverTooltip content={params.displayName} anchorClassName="sheet-header-title-tooltip">
+      <HoverTooltip
+        content={params.displayName}
+        anchorClassName="sheet-header-title-tooltip"
+        showDelayMs={params.tooltipShowDelayMs}
+      >
         <span className="sheet-header-title">{params.displayName}</span>
       </HoverTooltip>
 
       <div className="sheet-header-actions">
         {params.enableSorting ? (
-          <HoverTooltip content={sortTooltip}>
+          <HoverTooltip content={sortTooltip} showDelayMs={params.tooltipShowDelayMs}>
             <button
               type="button"
               className={state.sort ? 'sheet-header-button active' : 'sheet-header-button'}
@@ -112,7 +120,7 @@ export default function SheetHeader(params: IHeaderParams) {
         ) : null}
 
         {params.column.isFilterAllowed() ? (
-          <HoverTooltip content={filterTooltip}>
+          <HoverTooltip content={filterTooltip} showDelayMs={params.tooltipShowDelayMs}>
             <button
               ref={filterButtonRef}
               type="button"

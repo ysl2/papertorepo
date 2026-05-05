@@ -53,6 +53,7 @@ type RuntimeConfig = {
   repo_preview_limit: number
   job_preview_limit: number
   displayed_keys_sync_throttle_ms: number
+  tooltip_show_delay_ms: number
 }
 
 type Job = {
@@ -1440,6 +1441,7 @@ function StepCard({
   disabled,
   disabledReason,
   config,
+  tooltipShowDelayMs,
   onRun,
 }: {
   index: number
@@ -1449,6 +1451,7 @@ function StepCard({
   disabled: boolean
   disabledReason?: string | null
   config?: ReactNode
+  tooltipShowDelayMs?: number
   onRun: () => void
 }) {
   const runButton = (
@@ -1469,7 +1472,11 @@ function StepCard({
           {config ? <div className="step-card-config">{config}</div> : null}
 
           {disabled && disabledReason ? (
-            <HoverTooltip content={disabledReason} anchorClassName="step-card-run-tooltip">
+            <HoverTooltip
+              content={disabledReason}
+              anchorClassName="step-card-run-tooltip"
+              showDelayMs={tooltipShowDelayMs}
+            >
               <span className="step-card-run-tooltip-target">{runButton}</span>
             </HoverTooltip>
           ) : (
@@ -4257,6 +4264,7 @@ function App() {
         progressCurrent={papersLoadedCount}
         progressTotal={paperProgressTotal}
         displayedKeysSyncThrottleMs={runtimeConfig.displayed_keys_sync_throttle_ms}
+        tooltipShowDelayMs={runtimeConfig.tooltip_show_delay_ms}
       />
     ) : previewTab === 'jobs' ? (
       <AgGridSheet
@@ -4279,6 +4287,7 @@ function App() {
         onReset={clearTableSearchState}
         gridProgressActive={sqlBusy}
         displayedKeysSyncThrottleMs={runtimeConfig.displayed_keys_sync_throttle_ms}
+        tooltipShowDelayMs={runtimeConfig.tooltip_show_delay_ms}
         getRowClass={(row) => {
           if (sqlModeActive) return undefined
           const classes: string[] = []
@@ -4311,6 +4320,7 @@ function App() {
         loading={sqlBusy || sqlModeActive ? false : exportsLoading}
         loadingLabel={exportsData.length > 0 ? 'Refreshing exports…' : 'Loading exports…'}
         displayedKeysSyncThrottleMs={runtimeConfig.displayed_keys_sync_throttle_ms}
+        tooltipShowDelayMs={runtimeConfig.tooltip_show_delay_ms}
       />
     )
 
@@ -4452,6 +4462,7 @@ function App() {
             running={launchingJob === 'sync-papers'}
             disabled={liveScope.error !== null || launchingJob !== null}
             disabledReason={runDisabledReason('sync-papers', 'Sync papers')}
+            tooltipShowDelayMs={runtimeConfig?.tooltip_show_delay_ms}
             onRun={() => launchJob('sync-papers')}
             config={
               <ForceChip checked={syncPapersForce} label="Force paper refresh" onChange={setSyncPapersForce} />
@@ -4465,6 +4476,7 @@ function App() {
             running={launchingJob === 'find-repos'}
             disabled={liveScope.error !== null || launchingJob !== null}
             disabledReason={runDisabledReason('find-repos', 'Find repos')}
+            tooltipShowDelayMs={runtimeConfig?.tooltip_show_delay_ms}
             onRun={() => launchJob('find-repos')}
             config={
               <ForceChip checked={findReposForce} label="Force link refresh" onChange={setFindReposForce} />
@@ -4478,6 +4490,7 @@ function App() {
             running={launchingJob === 'refresh-metadata'}
             disabled={liveScope.error !== null || launchingJob !== null}
             disabledReason={runDisabledReason('refresh-metadata', 'Refresh metadata')}
+            tooltipShowDelayMs={runtimeConfig?.tooltip_show_delay_ms}
             onRun={() => launchJob('refresh-metadata')}
           />
         </div>

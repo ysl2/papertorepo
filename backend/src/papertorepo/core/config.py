@@ -70,6 +70,7 @@ class Settings(BaseSettings):
     frontend_repo_preview_limit: PositiveInt = 10000
     frontend_job_preview_limit: PositiveInt = 500
     frontend_displayed_keys_sync_throttle_ms: PositiveInt = 200
+    frontend_tooltip_show_delay_ms: PositiveInt = 200
 
     public_export_downloads: bool = True
     cors_origins: list[str] = Field(default_factory=lambda: ["*"])

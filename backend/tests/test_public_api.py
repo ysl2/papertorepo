@@ -366,6 +366,7 @@ def test_runtime_config_reports_frontend_bootstrap_config(db_env, monkeypatch):
     assert payload["repo_preview_limit"] == 10000
     assert payload["job_preview_limit"] == 500
     assert payload["displayed_keys_sync_throttle_ms"] == 200
+    assert payload["tooltip_show_delay_ms"] == 200
     assert payload["step_providers"]["sync_papers"] == [
         "arxiv_listing",
         "arxiv_catchup",
@@ -394,6 +395,7 @@ def test_runtime_config_uses_frontend_runtime_env_overrides(db_env, monkeypatch)
     monkeypatch.setenv("FRONTEND_REPO_PREVIEW_LIMIT", "9000")
     monkeypatch.setenv("FRONTEND_JOB_PREVIEW_LIMIT", "450")
     monkeypatch.setenv("FRONTEND_DISPLAYED_KEYS_SYNC_THROTTLE_MS", "250")
+    monkeypatch.setenv("FRONTEND_TOOLTIP_SHOW_DELAY_MS", "175")
     clear_settings_cache()
 
     with TestClient(create_app()) as client:
@@ -410,18 +412,21 @@ def test_runtime_config_uses_frontend_runtime_env_overrides(db_env, monkeypatch)
     assert payload["repo_preview_limit"] == 9000
     assert payload["job_preview_limit"] == 450
     assert payload["displayed_keys_sync_throttle_ms"] == 250
+    assert payload["tooltip_show_delay_ms"] == 175
 
     clear_settings_cache()
 
 
 def test_runtime_config_rejects_non_positive_frontend_runtime_values(db_env, monkeypatch):
-    monkeypatch.setenv("FRONTEND_DISPLAYED_KEYS_SYNC_THROTTLE_MS", "0")
-    clear_settings_cache()
+    for env_name in ("FRONTEND_DISPLAYED_KEYS_SYNC_THROTTLE_MS", "FRONTEND_TOOLTIP_SHOW_DELAY_MS"):
+        monkeypatch.setenv(env_name, "0")
+        clear_settings_cache()
 
-    with pytest.raises(ValueError):
-        create_app()
+        with pytest.raises(ValueError):
+            create_app()
 
-    clear_settings_cache()
+        monkeypatch.delenv(env_name)
+        clear_settings_cache()
 
 
 def _create_app_with_test_frontend_dist(dist_dir, monkeypatch):
